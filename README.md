@@ -138,6 +138,8 @@ PDF 渲染测试使用第二张样本图纸中人工目视核对的两个平面�
 .\.venv\Scripts\python.exe tools\test_ai_view_localization.py --file "C:\图纸\other.pdf" --page 1
 ```
 
+只让 AI 定位并导出高清图片、由自己查看，不调用 AI 检测生成图片时，加 `--skip-crop-review`。报告中 `crop_review_skipped:true`、`ai_review_all_passed:null`，程序仍记录原生边界核验问题；不要将导出完成当作人工验收通过。模型返回非法 JSON 或多余字段时，原响应保留，工具最多重试一次格式错误。
+
 第二个命令将两个高清 PNG、2600 像素预览及报告写入 `tmp/pdf_render_test/`（Git 忽略）。`render_png(entry, dpi=300)` 直接从 PDF 矢量渲染，无损输出且不受预览尺寸限制；现有 AI 输入和网页预览仍使用 JPEG，新增测试不会自动提高所有 API 请求的图片尺寸。
 
 ```powershell

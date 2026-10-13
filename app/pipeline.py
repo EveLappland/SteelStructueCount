@@ -95,6 +95,12 @@ def parse_model_content(content, contract, entry, audit=None):
     if contract is ViewResponse and isinstance(payload,dict) and isinstance(payload.get('views'),list):
         for index,view in enumerate(payload['views'],1):
             if isinstance(view,dict):
+                for alias in ('structure_bbox_note','structure_bbox_hint'):
+                    if alias in view and isinstance(view[alias],str):
+                        note=view.pop(alias)
+                        if note.strip():view['boundary_reason']='; '.join(filter(None,[view.get('boundary_reason',''),note]))
+                        if audit:audit.event('VIEW_NOTE_NORMALIZED',original_field=alias,value=note,
+                                            reason='只将模型附加的文字说明归入边界理由，不修改区域坐标。')
                 original_id=view.get('id')
                 view['id']=f"{entry['id']}-view{index:02d}"
                 view['page_id']=entry['id']

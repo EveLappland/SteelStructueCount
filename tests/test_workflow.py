@@ -273,6 +273,15 @@ class ApiWorkflowTest(unittest.TestCase):
 
 
 class NativePdfTest(unittest.TestCase):
+    def test_model_extra_boundary_note_is_preserved_without_changing_coordinates(self):
+        views=prepare_mock_data()['views']
+        original_box=list(views[0]['bbox'])
+        views[0]['structure_bbox_hint']='钢架立面范围'
+        result=parse_model_content(json.dumps({'views':views}),ViewResponse,{'id':'p'})
+        self.assertEqual(result['views'][0]['bbox'],original_box)
+        self.assertIn('钢架立面范围',result['views'][0]['boundary_reason'])
+        self.assertNotIn('structure_bbox_hint',result['views'][0])
+
     def test_truncated_flash_response_is_preserved_and_retried_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'drawing.pdf';path.write_bytes(pdf_bytes())

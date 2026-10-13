@@ -8,6 +8,7 @@ from pathlib import Path
 import pymupdf as fitz
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import ValidationError
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -64,6 +65,7 @@ def main():
     parser.add_argument('--output',type=Path,help='可选输出目录，默认按文件名和页码隔离')
     parser.add_argument('--reference',type=Path,help='可选人工参考JSON；不提供时仅做程序边界核验')
     parser.add_argument('--reuse-proposals',action='store_true',help='仅复用已保存AI定位框；裁切复核仍重新调用API')
+    parser.add_argument('--skip-crop-review',action='store_true',help='只定位和导出，不调用AI检查生成图片')
     args=parser.parse_args()
     entries=pdf_manifest([args.file])
     if not 1<=args.page<=len(entries):parser.error('页码超出PDF范围。')
@@ -84,9 +86,19 @@ def main():
         proposals={'views':json.loads((args.output/'ai_proposals.json').read_text(encoding='utf-8'))}
         audit.event('LOCALIZATION_PROPOSALS_REUSED',reason='程序扩边规则变更，复用同一PDF的原AI框，重新复核裁切。')
     else:
-        proposals=model_call(client,model,localization_prompt(page,CoordinateFrame().model_dump()),
-            {**entry,'image_max_dimension':3600},responses/'views.json',ViewResponse,audit=audit,
-            emit=lambda line:print(line,flush=True),options_override=options)
+        prompt=localization_prompt(page,CoordinateFrame().model_dump())
+        try:
+            proposals=model_call(client,model,prompt,
+                {**entry,'image_max_dimension':3600},responses/'views.json',ViewResponse,audit=audit,
+                emit=lambda line:print(line,flush=True),options_override=options)
+        except (json.JSONDecodeError,ValidationError) as error:
+            audit.event('LOCALIZATION_FORMAT_RETRY',error=str(error),
+                        reason='原响应保留；只重试一次格式或契约错误，不检查生成图片。')
+            proposals=model_call(client,model,prompt+'\nThe previous response failed JSON/schema validation: '+str(error)+
+                '\nReturn valid JSON exactly matching the schema. Use normal JSON numbers (0.75, never 00.75). '
+                'Do not add undeclared fields such as structure_bbox_note. Return concise region metadata only; omit axis_marks.',
+                {**entry,'image_max_dimension':3600},responses/'views_format_retry.json',ViewResponse,audit=audit,
+                emit=lambda line:print(line,flush=True),options_override=options)
     native=evidence_index([page])
     missing=repair_model_evidence(proposals,native,evidence_aliases(native),audit)
     original=proposals['views']
@@ -99,7 +111,7 @@ def main():
         png=args.output/(view['id']+'_auto_300dpi.png')
         png.write_bytes(render_png({**entry,'crop':view['bbox']},dpi=300))
         pix=fitz.Pixmap(png.read_bytes())
-        verify=model_call(client,model,
+        verify=None if args.skip_crop_review else model_call(client,model,
             'Inspect this cropped structural view image. Read its title. Check whether structure ends, '
             'outer grid labels, dimensions, splice callouts, title and applicable note below the title '
             'are cut at image edges. Check contamination by another full view or sheet title/reference table. '
@@ -116,7 +128,7 @@ def main():
             CropCheck,audit=audit,options_override=options,emit=lambda line:print(line,flush=True))
         # Native coverage and contamination are independent of the vision model's
         # self-review. Keep disagreement explicit rather than retrying until yes.
-        ai_passed=verify['complete'] and not verify['contains_other_view']
+        ai_passed=None if verify is None else verify['complete'] and not verify['contains_other_view']
         row={'title':view['title'],'image':str(png),'size':[pix.width,pix.height],
              'model_bbox':view['localization']['model_bbox'],'final_bbox':view['bbox'],
              **assessment,'program_check':view['localization'],'ai_crop_check':verify,
@@ -132,7 +144,8 @@ def main():
             'reference_provided':reference is not None,'reference_view_set_passed':reference_set_passed,
             'missing_native_titles':missing_titles,'page':args.page,
             'acceptance_basis':'程序边界检查'+('及独立参考标注覆盖。' if reference else '；未提供参考，不能证明完整性。'),
-            'ai_review_all_passed':bool(results) and all(r['ai_review_passed'] for r in results),
+            'crop_review_skipped':args.skip_crop_review,
+            'ai_review_all_passed':None if args.skip_crop_review else bool(results) and all(r['ai_review_passed'] for r in results),
             'views':results,'unresolved_model_evidence':missing}
     write_json(args.output/'report.json',report)
     write_json(args.output/('report_'+responses.name+'.json'),report)
