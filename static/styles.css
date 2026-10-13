@@ -1,5 +1,6 @@
 :root { --ink:#112B46; --teal:#087E8B; --sky:#DCECF5; --line:#C6D5DE; --paper:#F7FAFC; --muted:#617386; --amber:#B87812; }
 [hidden] { display:none !important; }
+#upload-error { color:#a32a21;border-left:3px solid #a32a21;padding:10px;background:#fff0ee; }
 .event-log { max-height:360px; overflow:auto; overflow-wrap:anywhere; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--paper); color:var(--ink); font-family:Inter, "Segoe UI", Arial, sans-serif; }

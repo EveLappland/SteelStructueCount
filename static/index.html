@@ -4,10 +4,10 @@
 <body><main class="shell">
 <header><div><p class="eyebrow">PDF → 观察 → 坐标实体</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
 <section class="workspace">
-<form id="upload-form" class="upload-panel"><h2>新建图纸任务</h2><p>上传概览、平面和立面 PDF，可在同一页包含多个视图。</p>
+<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>上传概览、平面和立面 PDF，可在同一页包含多个视图。第一阶段无需 API 设置。</p>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
 <details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><small>网页 Key 仅用于本次识别，重启或重试时可重新填写。</small></details>
-<button id="submit" type="submit">开始第一阶段</button></form>
+<p id="upload-error" role="alert" hidden></p><button id="submit" type="submit">开始第一阶段</button></form>
 <section class="status-panel"><h2>任务与进度</h2><label>已有任务<select id="job-list"><option value="">选择任务</option></select></label><p id="status" aria-live="polite">等待上传</p><p id="error" role="alert" hidden></p><ol id="event-log" class="event-log"></ol><div id="downloads"></div></section>
 </section>
 <section id="review" hidden>

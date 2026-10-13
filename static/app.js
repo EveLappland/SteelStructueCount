@@ -130,8 +130,22 @@ function renderMatches() {
         card.append(choice,reason);target.append(card);
     }
 }
-$('#files').onchange=()=>$('#file-list').replaceChildren(...[...$('#files').files].map(f=>node('p',`${f.name} · ${(f.size/1048576).toFixed(1)} MB`)));
-$('#upload-form').onsubmit=async event=>{event.preventDefault();$('#submit').disabled=true;try{const form=new FormData();for(const file of $('#files').files)form.append('files',file);for(const [key,value]of Object.entries(settings()))form.append(key,value);const response=await fetch('/api/jobs',{method:'POST',body:form});const payload=await response.json();if(!response.ok)throw Error(payload.detail);dirty=false;await chooseJob(payload.id);}catch(e){showError(e);}finally{$('#submit').disabled=false;}};
+$('#files').onchange=()=>{$('#upload-error').hidden=true;$('#file-list').replaceChildren(...[...$('#files').files].map(f=>node('p',`${f.name} · ${(f.size/1048576).toFixed(1)} MB`)));};
+$('#upload-form').onsubmit=async event=>{
+    event.preventDefault();const start=$('#submit'),error=$('#upload-error');error.hidden=true;
+    try{
+        const files=[...$('#files').files];
+        if(!files.length)throw Error('请先点击“选择 PDF 图纸”并选中文件，再开始第一阶段。刷新页面后需要重新选择文件。');
+        if(files.some(file=>!file.name.toLowerCase().endsWith('.pdf')))throw Error('仅支持 PDF 文件，请重新选择图纸。');
+        start.disabled=true;start.textContent='正在上传图纸…';
+        const form=new FormData();for(const file of files)form.append('files',file);
+        for(const [key,value]of Object.entries(settings()))form.append(key,value);
+        const response=await fetch('/api/jobs',{method:'POST',body:form});
+        const payload=await response.json();if(!response.ok)throw Error(payload.detail);
+        dirty=false;await chooseJob(payload.id);
+    }catch(e){error.hidden=false;error.textContent=e.message||String(e);}
+    finally{start.disabled=false;start.textContent='开始第一阶段';}
+};
 $('#job-list').onchange=()=>chooseJob($('#job-list').value);
 $('#apply-json').onclick=()=>{try{draft.data=JSON.parse($('#json-editor').value);manualTargets=[];mark();renderStage();dirty=true;}catch(e){showError(e);}};
 $('#save').onclick=async()=>{try{const reason=$('#edit-reason').value.trim();if(!reason)throw Error('请填写修改依据。');if(stageNumber<=2){const seen=new Set();for(const entry of manualTargets){if(!entry.page_id||seen.has(entry.target))continue;seen.add(entry.target);const id=`manual:${crypto.randomUUID()}`;draft.data.manual_evidence.push({id,page_id:entry.page_id,kind:'MANUAL',bbox:entry.bbox,text:reason,points:[],style:{}});if(entry.target===draft.data.frame)entry.target.origin_evidence_ids.push(id);else if(Array.isArray(entry.target.evidence_ids))entry.target.evidence_ids.push(id);}}
