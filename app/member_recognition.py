@@ -21,6 +21,13 @@ class MemberResponse(Contract):
     members: list[RecognizedMember]
 
 
+def view_tag(view):
+    """Drawing names are deduplication labels; application IDs remain provenance."""
+    if view['kind']=='ELEVATION' and view.get('fixed_label'):
+        return view['fixed_label']
+    return view['title']
+
+
 def make_input(page, view, stage_one):
     context = view_context(page, view['bbox'])
     catalog = stage_one.get('discovery_inventory', {}).get('profiles', [])
@@ -29,13 +36,14 @@ def make_input(page, view, stage_one):
     # Native labels are also retained in context.texts even for older inventory formats.
     return {
         'current_view_id': view['id'], 'current_view_title': view['title'],
+        'current_view_tag':view_tag(view),
         'page': {'id': page['id'], 'file': page['file'], 'page': page['page'],
                  'width_pt': page['width_pt'], 'height_pt': page['height_pt']},
         'crop_bbox_page_normalized': view['bbox'],
         'coordinate_usage': '文字和矢量位置为原PDF整页归一化坐标，仅用于与裁切图片关联。',
         'profile_catalog': stage_one.get('profile_catalog', []),
-        'view_catalog': [{k: v.get(k) for k in ('id', 'title', 'kind', 'fixed_label',
-                                               'elevation_m', 'elevation_basis')}
+        'view_catalog': [{**{k: v.get(k) for k in ('id', 'title', 'kind', 'fixed_label',
+                                               'elevation_m', 'elevation_basis')},'tag':view_tag(v)}
                          for v in stage_one['views']],
         'profile_labels': labels, 'native_evidence': context,
     }
@@ -47,14 +55,27 @@ def recognition_prompt(bundle):
 
 
 def validate_rows(rows, view, stage_one):
-    allowed = {v['id'] for v in stage_one['views'] if v['kind'] != 'ISOMETRIC'}
+    catalog=[v for v in stage_one['views'] if v['kind']!='ISOMETRIC']
+    allowed = {view_tag(v) for v in catalog}
+    aliases={}
+    for v in catalog:
+        for alias in (v['id'],v['title'],view_tag(v)):
+            aliases.setdefault(alias,set()).add(view_tag(v))
+    source=next((v for v in catalog if v['id']==view['id']),view)
     profiles = {section(p)[0] for p in stage_one.get('profile_catalog', [])}
     result = []
     for index, raw in enumerate(rows, 1):
         row = RecognizedMember.model_validate({k: raw[k] for k in RecognizedMember.model_fields}).model_dump()
-        row['view_tags'] = sorted(set(row['view_tags']))
         issues = []
-        if view['id'] not in row['view_tags']: issues.append('标签未包含当前来源视图')
+        tags=[]
+        for tag in row['view_tags']:
+            matches=aliases.get(tag,set())
+            if len(matches)==1:tags.append(next(iter(matches)))
+            else:
+                tags.append(tag)
+                if len(matches)>1:issues.append('视图名称对应多个目录项，需确认标签')
+        row['view_tags'] = sorted(set(tags))
+        if view_tag(source) not in row['view_tags']: issues.append('标签未包含当前来源视图')
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
         if len(row['view_tags']) < 2: issues.append('跨视图标签尚不完整')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')

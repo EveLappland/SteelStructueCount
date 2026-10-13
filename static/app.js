@@ -171,7 +171,7 @@ function renderViewLedger() {
         activeView=view;
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${id}.jpg`,alt:view.title,style:'max-width:100%'}));
-        panel.append(table(['规格','所属视图ID','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
+        panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
             input(titles(r.view_tags),r.view_tags.join(','),v=>{r.view_tags=splitRefs(v);mark(r);}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
@@ -180,7 +180,7 @@ function renderViewLedger() {
             input('可留空',r.issue,v=>setField(r,'issue',v||null)),r.checks.join('；'),
             button('删除',()=>{data.view_members=data.view_members.filter(x=>x!==r);mark();show(id);},'secondary')
         ])));
-        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[id],member_cnt:1,length_mm:null,basis:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
+        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title],member_cnt:1,length_mm:null,basis:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
     }
     target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
     if(choices.length)show(choices[0].id);

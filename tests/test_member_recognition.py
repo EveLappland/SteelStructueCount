@@ -62,6 +62,24 @@ class MemberRecognitionTests(unittest.TestCase):
         row=validate_rows([self.row],self.view,self.one)[0]
         with self.assertRaises(ValueError):validate_ledger({**self.one,'view_members':[row,row]})
 
+    def test_user_bottom_beam_has_plan_and_alignment_names(self):
+        plan={**self.view,'title':'PLAN AT EL.107.500(TOS)'}
+        elevation={'id':'el1','kind':'ELEVATION','title':'ELEVATION ON ALIGNMENT 302003-PR001I/1',
+                   'fixed_label':'302003-PR001I/1'}
+        one={'views':[plan,elevation],'profile_catalog':['HEA260']}
+        raw={**self.row,'spec':'HEA260','member_cnt':1,'view_tags':[plan['title'],elevation['fixed_label']],
+             'basis':'最下面的梁位于1轴线；长度6000由用户确认'}
+        result=validate_rows([raw],plan,one)[0]
+        self.assertEqual(result['view_tags'],['302003-PR001I/1','PLAN AT EL.107.500(TOS)'])
+        self.assertEqual(result['source_view'],'plan1')
+        self.assertEqual(result['checks'],[])
+        legacy=validate_rows([{**raw,'view_tags':['plan1','el1']}],plan,one)[0]
+        self.assertEqual(legacy['view_tags'],result['view_tags'])
+        page={'id':'p','file':'drawing.pdf','page':1,'width_pt':800,'height_pt':600,'texts':[],'vectors':[]}
+        bundle=make_input(page,plan,one)
+        self.assertEqual(bundle['current_view_tag'],plan['title'])
+        self.assertEqual(bundle['view_catalog'][1]['tag'],'302003-PR001I/1')
+
     def test_duplicate_json_members_key_rejected(self):
         from app.pipeline import parse_model_content
         with self.assertRaisesRegex(ValueError,'重复键'):
