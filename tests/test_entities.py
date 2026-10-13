@@ -40,6 +40,42 @@ def fixture(observations=None):
 
 
 class CoordinateAndLengthTest(unittest.TestCase):
+    def test_equivalent_scalar_and_axis_are_canonicalized_with_audit(self):
+        o=observation()
+        o['start']['x']['value_mm']=0
+        o['end']['x']['value_mm']=8000
+        result=build_lengths(fixture([o]),EVIDENCE)
+        candidate=result['candidates'][0]
+        self.assertTrue(candidate['confirmed'],candidate['issues'])
+        self.assertEqual(candidate['length_mm'],8000)
+        self.assertEqual(len(candidate['normalizations']),2)
+        self.assertIsNone(result['observations'][0]['end']['x']['value_mm'])
+
+    def test_contradictory_axis_and_scalar_are_not_silently_replaced(self):
+        o=observation();o['end']['x']['value_mm']=9000
+        c=build_lengths(fixture([o]),EVIDENCE)['candidates'][0]
+        self.assertFalse(c['confirmed'])
+        self.assertTrue(any('同时' in issue for issue in c['issues']))
+
+    def test_full_printed_axis_alias_is_preserved_and_resolved(self):
+        data=fixture()
+        data['frame']['axes'][0]['aliases']=['PROJECT/1']
+        data['observations'][0]['start']['x']['axis_label']='PROJECT/1'
+        result=build_lengths(data,EVIDENCE)
+        self.assertTrue(result['candidates'][0]['confirmed'])
+        self.assertEqual(result['observations'][0]['start']['x']['axis_label'],'1')
+        self.assertEqual(result['candidates'][0]['normalizations'][0]['before']['axis_label'],'PROJECT/1')
+
+    def test_scalar_offset_requires_associated_dimension_not_matching_number_elsewhere(self):
+        evidence={**EVIDENCE,'dim':{'id':'dim','page_id':'p','kind':'TEXT','bbox':[.2,.2,.3,.3],'text':'4000'}}
+        o=observation();o['start']['x'].update(axis_label=None,value_mm=4000,evidence_ids=[])
+        c=build_lengths(fixture([o]),evidence)['candidates'][0]
+        self.assertFalse(c['confirmed'])
+        o['start']['x']['evidence_ids']=['dim']
+        c=build_lengths(fixture([o]),evidence)['candidates'][0]
+        self.assertTrue(c['confirmed'],c['issues'])
+        self.assertEqual(c['start_mm'][0],4000)
+
     def test_dimension_chain_and_axis_names(self):
         data=fixture()
         values,_,issues=calibrate(data['frame'],EVIDENCE)

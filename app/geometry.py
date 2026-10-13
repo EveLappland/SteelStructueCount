@@ -4,6 +4,7 @@ import json
 import math
 import re
 from collections import defaultdict
+from .native_pdf import inside
 
 from .domain import LengthCandidate, Member, StageOne, StageTwo, StageThree
 
@@ -190,13 +191,81 @@ def resolve_point(point, frame, values, sources, evidence):
     return coords, refs, issues
 
 
+def canonical_axis(direction,label,frame):
+    matches=[axis['label'] for axis in frame['axes'] if axis['direction']==direction
+             and label in [axis['label'],*axis.get('aliases',[])]]
+    return matches[0] if len(matches)==1 else label
+
+
+def normalize_coordinates(point,view,frame,values,sources,evidence,dimension_texts):
+    """Canonicalize existing model numbers using proved axes/dimensions; never measure pixels."""
+    changes=[]
+    for direction,name in [('X','x'),('Y','y')]:
+        ref=point[name]
+        before={key:ref[key] for key in ('axis_label','value_mm','offset_mm','towards')}
+        if ref['axis_label'] is not None:
+            ref['axis_label']=canonical_axis(direction,ref['axis_label'],frame)
+        if ref['towards'] is not None:
+            ref['towards']=canonical_axis(direction,ref['towards'],frame)
+        label=ref['axis_label']
+        value=ref['value_mm']
+        if label is not None and value is not None and (direction,label) in values:
+            anchor=values[(direction,label)]
+            offset=ref['offset_mm']
+            if ref['towards'] is not None and (direction,ref['towards']) in values:
+                offset=abs(offset)*(1 if values[(direction,ref['towards'])]>anchor else -1)
+            if abs(value-anchor)<=0.001 or abs(value-(anchor+offset))<=0.001:
+                ref['value_mm']=None
+        elif label is None and value is not None:
+            exact=[key for key,coordinate in values.items() if key[0]==direction and abs(coordinate-value)<=0.001]
+            if len(exact)==1:
+                ref.update(axis_label=exact[0][1],value_mm=None)
+            elif ref['offset_mm']==0:
+                options=[]
+                for key,coordinate in values.items():
+                    if key[0]!=direction:continue
+                    delta=value-coordinate
+                    supported=[t['id'] for t in dimension_texts if t['id'] in ref['evidence_ids']
+                               and numeric_supported([t['id']],[delta],evidence)]
+                    if supported and abs(delta)>0.001:
+                        options.append((abs(delta),key[1],delta,supported))
+                if options:
+                    _,axis,delta,proof=min(options,key=lambda item:(item[0],item[1]))
+                    ref.update(axis_label=axis,value_mm=None,offset_mm=delta)
+                    ref['evidence_ids']=list(dict.fromkeys(ref['evidence_ids']+proof))
+        key=(direction,ref['axis_label'])
+        if ref['axis_label'] is not None and key in sources:
+            ref['evidence_ids']=list(dict.fromkeys(ref['evidence_ids']+sources[key]))
+        after={key:ref[key] for key in ('axis_label','value_mm','offset_mm','towards')}
+        if after!=before:
+            changes.append({'direction':direction,'before':before,'after':after,'evidence_ids':ref['evidence_ids'],
+                            'reason':'数值不变：消除与轴线一致的冗余坐标，或写成已知轴线加图示尺寸偏移；未从像素推算。'})
+    return changes
+
+
 def build_lengths(stage_one, evidence):
     data = StageOne.model_validate(stage_one).model_dump()
     frame, views = data['frame'], {v['id']: v for v in data['views']}
+    for axis in frame['axes']:
+        aliases=set(axis.get('aliases',[]))
+        for identity in axis['evidence_ids']:
+            text=evidence.get(identity,{}).get('text','').strip()
+            if text and (text==axis['label'] or text.rsplit('/',1)[-1]==axis['label']):
+                aliases.add(text)
+        axis['aliases']=sorted(aliases)
     values, sources, frame_issues = calibrate(frame, evidence)
+    dimension_texts={}
+    for view in views.values():
+        dimension_texts[view['id']]=[item for item in evidence.values() if item.get('kind')=='TEXT'
+            and item.get('page_id')==view['page_id'] and inside(item,view['bbox'])
+            and re.fullmatch(r'[+-]?\d+(?:[.,]\d+)?\s*(?:mm|m)?',item.get('text','').strip(),re.I)]
     candidates = []
     for observation in data['observations']:
         view = views[observation['view_id']]
+        normalizations=[]
+        for name in ('start','end'):
+            changes=normalize_coordinates(observation[name],view,frame,values,sources,evidence,dimension_texts[view['id']])
+            normalizations.extend({'endpoint':name,**change} for change in changes)
         # A view title can supply its fixed third coordinate; never infer an in-plane offset.
         if refs_exist(view['evidence_ids'],evidence):
             for name in ('start','end'):
@@ -204,7 +273,7 @@ def build_lengths(stage_one, evidence):
                 if view['fixed_axis'] in ('X','Y') and view['fixed_label']:
                     ref=point[view['fixed_axis'].lower()]
                     if ref['axis_label'] is None and ref['value_mm'] is None:
-                        ref['axis_label']=view['fixed_label']
+                        ref['axis_label']=canonical_axis(view['fixed_axis'],view['fixed_label'],frame)
                         ref['evidence_ids']=list(dict.fromkeys(ref['evidence_ids']+view['evidence_ids']))
                 elif view['fixed_axis']=='Z' and view['elevation_m'] is not None and point['z']['value'] is None:
                     z=point['z']
@@ -252,11 +321,12 @@ def build_lengths(stage_one, evidence):
                 if abs(start[k] - end[k]) > 1:
                     issues.append('构件不在所属正投影视图的固定坐标平面内。')
                 if view['fixed_axis'] in ('X','Y') and view['fixed_label']:
-                    plane = values.get((view['fixed_axis'],view['fixed_label']))
+                    fixed_label=canonical_axis(view['fixed_axis'],view['fixed_label'],frame)
+                    plane = values.get((view['fixed_axis'],fixed_label))
                     # Axis-relative offsets must be explicitly evidenced, not an unrelated frame.
                     for point in ('start','end'):
                         ref = observation[point][view['fixed_axis'].lower()]
-                        if plane is None or ref['axis_label'] != view['fixed_label']:
+                        if plane is None or ref['axis_label'] != fixed_label:
                             issues.append('构件固定轴线与视图标题不一致。')
                 if view['fixed_axis'] == 'Z' and view['elevation_m'] is not None:
                     for point in ('start','end'):
@@ -274,7 +344,8 @@ def build_lengths(stage_one, evidence):
             end_mm=end if None not in end else None, reference_basis='|'.join(bases)+'|'+observation['reference_line'],
             semantic_key=semantic, length_mm=length, formula=formula,
             evidence_ids=list(dict.fromkeys(sr+er+all_refs(observation))),
-            issues=list(dict.fromkeys(issues)), confirmed=not issues and length is not None).model_dump())
+            issues=list(dict.fromkeys(issues)), confirmed=not issues and length is not None,
+            normalizations=normalizations).model_dump())
     catalog = defaultdict(list)
     for candidate in candidates:
         if candidate['confirmed']:

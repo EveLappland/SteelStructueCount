@@ -24,6 +24,7 @@ class Axis(Contract):
     direction: Literal['X', 'Y']
     value_mm: float | None = None
     evidence_ids: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
 
 
 class Dimension(Contract):
@@ -145,6 +146,7 @@ class LengthCandidate(Contract):
     evidence_ids: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     confirmed: bool = False
+    normalizations: list[dict] = Field(default_factory=list)
 
 
 class Member(Contract):

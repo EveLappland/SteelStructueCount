@@ -16,7 +16,7 @@ from app.main import create_app
 from app.native_pdf import extract_page
 from app.pipeline import (ViewResponse, AnalysisResponse, model_call, parse_model_content, validate_draft,
                           evidence_aliases, repair_model_evidence)
-from app.pipeline import model_schema, request_options
+from app.pipeline import model_schema, request_options, BoundaryResponse, apply_boundary_reviews
 from app.store import JobStore, StoreError
 from test_entities import fixture, observation
 
@@ -213,6 +213,39 @@ class ApiWorkflowTest(unittest.TestCase):
 
 
 class NativePdfTest(unittest.TestCase):
+    def test_truncated_flash_response_is_preserved_and_retried_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'drawing.pdf';path.write_bytes(pdf_bytes())
+            client=MagicMock();client.base_url='https://example.test'
+            truncated=ChatCompletion(id='cut',created=0,model='deepseek-flash',object='chat.completion',
+                choices=[{'index':0,'finish_reason':'length','message':{'role':'assistant','content':'{"views":['}}])
+            good=ChatCompletion(id='good',created=0,model='deepseek-flash',object='chat.completion',
+                choices=[{'index':0,'finish_reason':'stop','message':{'role':'assistant','content':json.dumps({'views':prepare_mock_data()['views']})}}])
+            client.chat.completions.create.side_effect=[truncated,good]
+            output=Path(tmp)/'raw.json'
+            result=model_call(client,'deepseek-flash','test',{'id':'p','source_path':str(path),'page':1},output,ViewResponse)
+            self.assertTrue(result['views'])
+            self.assertTrue(output.with_suffix('.truncated.json').exists())
+            self.assertEqual(client.chat.completions.create.call_count,2)
+            self.assertEqual(client.chat.completions.create.call_args.kwargs['extra_body']['thinking']['type'],'disabled')
+
+    def test_boundary_review_requires_explanation_and_existing_evidence(self):
+        schema=model_schema(BoundaryResponse)
+        self.assertEqual(schema['$defs']['Boundary']['required'],['kind','evidence_ids','note'])
+        observations=prepare_mock_data()['observations']
+        identity=observations[0]['id']
+        observations[0]['start_boundary']={'kind':'UNKNOWN','evidence_ids':[],'note':''}
+        payload=BoundaryResponse(reviews=[{'observation_id':identity,
+            'start_boundary':{'kind':'END','evidence_ids':['missing'],'note':'end connection'},
+            'end_boundary':{'kind':'UNKNOWN','evidence_ids':[],'note':'not visible'}}]).model_dump()
+        apply_boundary_reviews(observations,payload,{}, {})
+        self.assertEqual(observations[0]['start_boundary']['kind'],'UNKNOWN')
+        payload['reviews'][0]['start_boundary']['evidence_ids']=['end-vector']
+        apply_boundary_reviews(observations,payload,{'end-vector':{'kind':'VECTOR'}},{})
+        self.assertEqual(observations[0]['start_boundary']['kind'],'END')
+        payload['reviews'].append(payload['reviews'][0])
+        with self.assertRaises(ValueError):apply_boundary_reviews(observations,payload,{}, {})
+
     def test_wire_schema_does_not_request_server_owned_ids(self):
         schema=model_schema(ViewResponse)
         self.assertNotIn('id',schema['$defs']['View']['properties'])

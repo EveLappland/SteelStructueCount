@@ -17,7 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from pydantic import Field
 
-from .domain import Contract, CoordinateFrame, Observation, StageOne, View, StageTwo, StageThree, AxisMark
+from .domain import Contract, CoordinateFrame, Observation, StageOne, View, StageTwo, StageThree, AxisMark, Boundary
 from .drawing_input import pdf_manifest, render_data_uri, write_view_image
 from .geometry import build_lengths, match_entities, section, validate_stage_one
 from .llm_runner import _api_settings
@@ -36,6 +36,32 @@ class AnalysisResponse(Contract):
     warnings: list[str] = Field(default_factory=list)
 
 
+class BoundaryReview(Contract):
+    observation_id: str
+    start_boundary: Boundary
+    end_boundary: Boundary
+
+
+class BoundaryResponse(Contract):
+    reviews: list[BoundaryReview]
+    warnings: list[str] = Field(default_factory=list)
+
+
+def boundary_review_prompt(view,observations,context):
+    return (
+        'Review ONLY physical start/end boundaries of the supplied observations against the IMAGE. '
+        'Return one review for EVERY observation_id, preserving the exact ID. Do not invent members, '
+        'change coordinates, infer lengths from pixels or treat axis crossings as physical ends. '
+        'END requires a visible connection/termination; SPLICE requires a splice marker; '
+        'PROFILE_CHANGE requires an explicit section transition. A column cross-section in PLAN '
+        'does NOT establish either longitudinal end. Use UNKNOWN when evidence is insufficient. '
+        'For EACH boundary ALWAYS return kind, original native evidence_ids and a concrete note '
+        'describing the endpoint and the evidence. A profile label alone cannot prove an end. '
+        'Prefer VECTOR primitives at the endpoint or explicit TEXT splice/connection evidence. '
+        f"View: {json.dumps(view,ensure_ascii=False)}\nObservations: {json.dumps(observations,ensure_ascii=False)}\n"
+        f"Native evidence: {json.dumps(context,ensure_ascii=False,separators=(',',':'))}")
+
+
 def request_options(model):
     if model in ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp'):
         return {'reasoning_effort':'low','max_tokens':24000}
@@ -45,11 +71,13 @@ def request_options(model):
 def model_schema(contract):
     schema=contract.model_json_schema()
     # Do not ask the model to generate identities owned by the application.
-    for name,fields in [('View',('id','page_id')),('Observation',('id','view_id'))]:
+    for name,fields in [('View',('id','page_id')),('Observation',('id','view_id')),('Axis',('aliases',))]:
         definition=schema.get('$defs',{}).get(name)
         if definition:
             for field in fields:definition.get('properties',{}).pop(field,None)
             definition['required']=[field for field in definition.get('required',[]) if field not in fields]
+    if contract is BoundaryResponse:
+        schema['$defs']['Boundary']['required']=['kind','evidence_ids','note']
     return schema
 
 
@@ -121,9 +149,34 @@ def repair_model_evidence(value,evidence,aliases,audit=None):
     return list(dict.fromkeys(missing))
 
 
-def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None):
+def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
+    by_id={o['id']:o for o in observations}
+    seen=set()
+    for review in payload['reviews']:
+        identity=review['observation_id']
+        if identity not in by_id or identity in seen:
+            raise ValueError('端部复核返回不存在或重复的观察 ID。')
+        seen.add(identity)
+        missing=repair_model_evidence(review,evidence,aliases,audit)
+        observation=by_id[identity]
+        for name in ('start_boundary','end_boundary'):
+            proposal=review[name]
+            old=observation[name]
+            if old['kind']!='UNKNOWN' and old['evidence_ids']:
+                continue
+            # A missing/non-unique reference cannot be repaired by a kind label alone.
+            accepted=not missing and (proposal['kind']=='UNKNOWN' or
+                                      bool(proposal['evidence_ids']) and bool(proposal['note'].strip()))
+            if accepted:observation[name]=proposal
+            if audit:audit.event('BOUNDARY_REVIEWED',observation_id=identity,endpoint=name,
+                                 before=old,proposal=proposal,accepted=accepted,missing_evidence=missing,
+                                 reason='模型复核原图端部；只有带可解析证据与理由的明确边界进入长度计算。')
+    return sorted(set(by_id)-seen)
+
+
+def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None):
     schema = json.dumps(model_schema(contract), ensure_ascii=False)
-    options=request_options(model)
+    options={**request_options(model),**(options_override or {})}
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
                                  'page':entry['page'],'crop':entry.get('crop'),'options':options,
                                  'source_hash':hashlib.sha256(Path(entry['source_path']).read_bytes()).hexdigest()},sort_keys=True)
@@ -192,6 +245,17 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
     raw=json.loads(response.model_dump_json())
     if audit:audit.event('MODEL_RESPONSE_RECEIVED',response_file=relative,elapsed_seconds=round(time.monotonic()-started,3),
                          usage=raw.get('usage'),finish_reason=raw.get('choices',[{}])[0].get('finish_reason') if raw.get('choices') else None)
+    finish=raw.get('choices',[{}])[0].get('finish_reason') if raw.get('choices') else None
+    if finish=='length':
+        if model in ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp') and not options_override:
+            truncated=response_path.with_suffix('.truncated.json')
+            shutil.copyfile(response_path,truncated)
+            if audit:audit.event('MODEL_TRUNCATION_RETRY',response_file=relative,
+                preserved_file=str(truncated.relative_to(audit.directory)),
+                reason='输出额度被思考内容耗尽，保留截断响应，仅重试本次请求并关闭 thinking。')
+            return model_call(client,model,prompt,entry,response_path,contract,emit=emit,audit=audit,
+                              options_override={'extra_body':{'thinking':{'type':'disabled'}}})
+        raise ValueError('模型输出被 token 限额截断；原始响应已保存，不能使用部分 JSON。')
     try:
         result=parse_model_content(response_content(raw),contract,entry,audit)
     except Exception as exc:
@@ -387,6 +451,22 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
                             analysis['warnings'].append('候选首尾不在所属视图内，已转为待确认。')
                             audit.event('ENDPOINT_DEFERRED',view_id=view['id'],endpoint=endpoint,point=point,bbox=box,
                                         reason='不把裁切坐标或越界点当作原图端点。')
+                unresolved=[o for o in analysis['observations'] if any(
+                    o[name]['kind']=='UNKNOWN' or not o[name]['evidence_ids']
+                    for name in ('start_boundary','end_boundary'))]
+                if unresolved:
+                    emit(f"复核视图 {view['title']} 中 {len(unresolved)} 条观察的端部证据。")
+                    try:
+                        review=call(client,model,
+                            boundary_review_prompt(view,unresolved,context),
+                            {**entry,'id':view['id'],'crop':view['bbox']},
+                            response_folder/f"{view['id']}_boundaries.json",BoundaryResponse)
+                        absent=apply_boundary_reviews(unresolved,review,native_evidence,aliases,audit)
+                        analysis['warnings'].extend(review['warnings'])
+                        if absent:analysis['warnings'].append('端部复核缺少观察：'+', '.join(absent))
+                    except Exception as exc:
+                        analysis['warnings'].append(audit.scrub(f'端部复核失败，保留待确认：{exc}'))
+                        audit.event('BOUNDARY_REVIEW_FAILED',view_id=view['id'],error=str(exc))
                 missing=repair_model_evidence(analysis,native_evidence,aliases,audit)
                 if missing:
                     analysis['warnings'].append('坐标或轴线证据待确认：'+', '.join(missing))
@@ -457,8 +537,8 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
          [[m['id'],m['assembly_id'],m['component_index'],m['profile'],m['material'],m['start_mm'],m['end_mm'],m['length_mm'],m['observation_ids'],m['evidence_ids']] for m in stage_three['members']]),
         ('Observation Audit',['观察 ID','视图','原规格','角色','首端语义','尾端语义','首边界','尾边界','证据','说明'],
          [[o['id'],o['view_id'],o['profile'],o['role'],o['start'],o['end'],o['start_boundary'],o['end_boundary'],o['evidence_ids'],o['notes']] for o in stage_two['observations']]),
-        ('Length Audit',['观察 ID','规格','首端 mm','尾端 mm','名义长度 mm','计算式','基准','证据','问题'],
-         [[c['observation_id'],c['profile'],c['start_mm'],c['end_mm'],c['length_mm'],c['formula'],c['reference_basis'],c['evidence_ids'],c['issues']] for c in stage_two['candidates']]),
+        ('Length Audit',['观察 ID','规格','首端 mm','尾端 mm','名义长度 mm','计算式','基准','证据','问题','坐标规范化依据'],
+         [[c['observation_id'],c['profile'],c['start_mm'],c['end_mm'],c['length_mm'],c['formula'],c['reference_basis'],c['evidence_ids'],c['issues'],c.get('normalizations',[])] for c in stage_two['candidates']]),
         ('Matches',['左观察','右观察','关系','理由'],
          [[m['left'],m['right'],m['kind'],m['reason']] for m in stage_three['matches']+stage_three['conflicts']]),
         ('Exceptions',['观察 ID','问题'],[[e['observation_id'],e['issues']] for e in stage_three['exceptions']]),
