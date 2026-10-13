@@ -17,6 +17,8 @@ Copy-Item .env.example .env
 
 在 `.env` 填写 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，或在网页临时填写。模型需支持图片输入以及 `response_format: json_object`。网页提供的 Key 不写入 SQLite、任务文件或导出包；第一阶段执行结束后释放，重启/重试需重新填写或使用 `.env`。
 
+DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明：https://api-docs.deepseek.com/guides/vision/ 。项目对该模型使用 `reasoning_effort=low` 与 24000 的输出 token 上限，并在日志记录这些参数。`deepseek-v4-pro` 不在该官方视觉支持列表；旧 Pro 响应保留用于诊断，不应用作视觉验收基准。
+
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8120
 ```
@@ -80,6 +82,14 @@ API 地址、Key、认证头不作为日志字段保存；已知密钥、Bearer 
 项目已建立本地 Git 仓库。`.gitignore` 排除 `.env` 与其变体、虚拟环境、缓存、任务目录、SQLite、日志、PDF、Excel 和 ZIP；仅空白 `.env.example` 跟踪入库。没有向远端上传代码或任务数据。
 
 使用真实图纸做程序验收时，阶段确认可携带 `reason`，例如“流程验证，允许待确认项继续；不是工程确认”。完成状态只表示程序完成三阶段及导出，不代表待确认构件已得到工程认可。
+
+对已经执行中的真实任务进行三阶段程序验收（会自动确认阶段，明确保留疑点）：
+
+```powershell
+.\.venv\Scripts\python.exe tools\verify_task.py --job-id <任务ID> --allow-pending
+```
+
+该工具将确认记录标记为 `[FLOW_VERIFICATION]`，并写入任务目录的 `flow_verification.json`，区分程序跑通与工程认可。没有 `--allow-pending` 时，在第一处人工确认门停止。
 
 旧任务文件保留，不转换成 v2；旧 Excel 不能自动成为新坐标台账。`llm_runner.py` 和旧规则测试仅保留历史校验能力，Web 任务入口使用新的 pipeline。
 

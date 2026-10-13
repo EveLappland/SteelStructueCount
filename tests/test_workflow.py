@@ -16,6 +16,7 @@ from app.main import create_app
 from app.native_pdf import extract_page
 from app.pipeline import (ViewResponse, AnalysisResponse, model_call, parse_model_content, validate_draft,
                           evidence_aliases, repair_model_evidence)
+from app.pipeline import model_schema, request_options
 from app.store import JobStore, StoreError
 from test_entities import fixture, observation
 
@@ -212,6 +213,14 @@ class ApiWorkflowTest(unittest.TestCase):
 
 
 class NativePdfTest(unittest.TestCase):
+    def test_wire_schema_does_not_request_server_owned_ids(self):
+        schema=model_schema(ViewResponse)
+        self.assertNotIn('id',schema['$defs']['View']['properties'])
+        schema=model_schema(AnalysisResponse)
+        self.assertNotIn('view_id',schema['$defs']['Observation']['properties'])
+        self.assertEqual(request_options('test'),{})
+        self.assertEqual(request_options('deepseek-flash')['reasoning_effort'],'low')
+
     def test_only_unique_vector_aliases_are_repaired(self):
         evidence={
             'p:v1.0.0':{'kind':'VECTOR'},

@@ -11,8 +11,9 @@ function settings() { return {base_url:$('#base-url').value,api_key:$('#api-key'
 async function refreshTrace() {
     if(!jobId)return;
     try {
-        const result=await api(`/api/jobs/${jobId}/logs?limit=1000`);
-        $('#trace-content').replaceChildren(...result.items.map(item=>{
+        let result=await api(`/api/jobs/${jobId}/logs?limit=1000`);
+        if(result.total>1000)result=await api(`/api/jobs/${jobId}/logs?after=${result.total-1000}&limit=1000`);
+        $('#trace-content').replaceChildren(node('p',`显示最近 ${result.items.length} / ${result.total} 条，完整记录可下载。`),...result.items.map(item=>{
             const details=node('details','',{class:'trace-row'});
             details.append(node('summary',`${new Date(item.at).toLocaleTimeString()} · ${item.event}${item.reason?' · '+item.reason:''}`));
             details.append(node('pre',JSON.stringify(item,null,2)));
