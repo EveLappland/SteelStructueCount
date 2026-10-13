@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>钢材坐标实体统计</title><link rel="stylesheet" href="/styles.css"></head>
+<body><main class="shell">
+<header><div><p class="eyebrow">PDF → 观察 → 坐标实体</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
+<section class="workspace">
+<form id="upload-form" class="upload-panel"><h2>新建图纸任务</h2><p>上传概览、平面和立面 PDF，可在同一页包含多个视图。</p>
+<label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
+<details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><small>网页 Key 仅用于本次识别，重启或重试时可重新填写。</small></details>
+<button id="submit" type="submit">开始第一阶段</button></form>
+<section class="status-panel"><h2>任务与进度</h2><label>已有任务<select id="job-list"><option value="">选择任务</option></select></label><p id="status" aria-live="polite">等待上传</p><p id="error" role="alert" hidden></p><ol id="event-log" class="event-log"></ol><div id="downloads"></div></section>
+</section>
+<section id="review" hidden>
+<nav id="stage-tabs" class="stage-tabs" aria-label="阶段"></nav>
+<div class="review-heading"><div><h2 id="stage-title"></h2><p id="stage-state"></p></div><button id="retry" type="button">重试当前阶段</button></div>
+<div id="warnings" class="warnings"></div>
+<div id="stage-content"></div>
+<details class="advanced"><summary>完整数据与历史（可恢复人工草稿）</summary><p>高级编辑使用相同版本校验；候选长度和数量会由程序重新计算。</p><textarea id="json-editor" spellcheck="false"></textarea><button id="apply-json" type="button">将 JSON 应用到草稿</button><div id="history"></div></details>
+<div class="review-actions"><label>修改说明<input id="edit-reason" placeholder="说明首尾、尺寸或匹配的修改依据"></label><button id="save" type="button">保存修改并重新计算</button><label class="toggle"><input id="pending" type="checkbox">保留待确认项继续（不计入已确认汇总）</label><button id="approve" type="button">确认并进入下一阶段</button></div>
+</section>
+<details id="task-trace" class="advanced" hidden><summary>处理依据与 API 日志</summary><p>查看请求耗时、响应校验、证据修复、长度计算和匹配原因。日志不包含 API Key。</p><button id="refresh-trace" type="button">刷新日志</button><a id="download-trace" class="download">下载任务日志</a><div id="trace-content"></div></details>
+</main><script src="/app.js"></script></body></html>
