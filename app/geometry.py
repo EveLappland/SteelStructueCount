@@ -234,11 +234,10 @@ def normalize_coordinates(point,view,frame,values,sources,evidence,dimension_tex
                     ref.update(axis_label=axis,value_mm=None,offset_mm=delta)
                     ref['evidence_ids']=list(dict.fromkeys(ref['evidence_ids']+proof))
         key=(direction,ref['axis_label'])
-        if ref['axis_label'] is not None and key in sources:
-            ref['evidence_ids']=list(dict.fromkeys(ref['evidence_ids']+sources[key]))
         after={key:ref[key] for key in ('axis_label','value_mm','offset_mm','towards')}
         if after!=before:
-            changes.append({'direction':direction,'before':before,'after':after,'evidence_ids':ref['evidence_ids'],
+            proof=list(dict.fromkeys(ref['evidence_ids']+sources.get(key,[])))
+            changes.append({'direction':direction,'before':before,'after':after,'evidence_ids':proof,
                             'reason':'数值不变：消除与轴线一致的冗余坐标，或写成已知轴线加图示尺寸偏移；未从像素推算。'})
     return changes
 
@@ -287,7 +286,7 @@ def build_lengths(stage_one, evidence):
         if not profile or profile in {'UNKNOWN', 'NONE', 'NULL', 'N/A'}:
             issues.append('规格未确定。')
         if observation['deferred']:
-            issues.append('用户保留待确认。')
+            issues.append('观察保留待确认（识别歧义或人工暂缓）。')
         if observation['image_start'] is None or observation['image_end'] is None:
             issues.append('缺少原图首尾定位。')
         if not refs_exist(observation['evidence_ids'], evidence):

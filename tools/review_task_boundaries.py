@@ -71,7 +71,8 @@ def review(base,identity,view_id=None,repair_empty=False):
         payload=model_call(client,model,boundary_review_prompt(view,observations,view_context(pages[view['page_id']],view['bbox'])),
             {**manifest[view['page_id']],'id':view['id'],'crop':view['bbox']},
             folder/f"{view['id']}_boundaries.json",BoundaryResponse,reuse_saved=True,
-            emit=lambda message:print(message,flush=True),audit=audit)
+            emit=lambda message:print(message,flush=True),audit=audit,
+            options_override={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None)
         absent=apply_boundary_reviews(observations,payload,evidence,aliases,audit)
         data['warnings'].extend(payload['warnings'])
         if absent:data['warnings'].append('端部复核缺少观察：'+', '.join(absent))

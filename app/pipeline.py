@@ -460,7 +460,8 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
                         review=call(client,model,
                             boundary_review_prompt(view,unresolved,context),
                             {**entry,'id':view['id'],'crop':view['bbox']},
-                            response_folder/f"{view['id']}_boundaries.json",BoundaryResponse)
+                            response_folder/f"{view['id']}_boundaries.json",BoundaryResponse,
+                            options_override={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None)
                         absent=apply_boundary_reviews(unresolved,review,native_evidence,aliases,audit)
                         analysis['warnings'].extend(review['warnings'])
                         if absent:analysis['warnings'].append('端部复核缺少观察：'+', '.join(absent))

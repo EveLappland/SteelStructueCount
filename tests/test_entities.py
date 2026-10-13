@@ -76,6 +76,12 @@ class CoordinateAndLengthTest(unittest.TestCase):
         self.assertTrue(c['confirmed'],c['issues'])
         self.assertEqual(c['start_mm'][0],4000)
 
+    def test_axis_chain_evidence_does_not_prove_an_unreferenced_local_offset(self):
+        o=observation();o['start']['x'].update(offset_mm=8000,evidence_ids=[])
+        c=build_lengths(fixture([o]),EVIDENCE)['candidates'][0]
+        self.assertFalse(c['confirmed'])
+        self.assertTrue(any('偏移缺少' in issue for issue in c['issues']))
+
     def test_dimension_chain_and_axis_names(self):
         data=fixture()
         values,_,issues=calibrate(data['frame'],EVIDENCE)
