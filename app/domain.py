@@ -169,6 +169,7 @@ class StageOne(Contract):
     # Users can attach their own evidence; provenance is retained by the store.
     manual_evidence: list[Evidence] = Field(default_factory=list)
     profile_catalog: list[str] = Field(default_factory=list)
+    discovery_inventory: dict = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     notes: str = ''
 

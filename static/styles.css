@@ -67,6 +67,9 @@ fieldset small { grid-column:1/-1;overflow-wrap:anywhere; }
 .review-actions .toggle input { flex:0 0 auto; }
 #json-editor { height:300px;font-family:Consolas,monospace; }
 .secondary { background:#617386; }
+#discovery-inventory { margin:18px 0;padding:20px;border:1px solid var(--line);background:#fff; }
+#discovery-inventory details { max-width:700px; }
+#discovery-inventory summary { cursor:pointer; }
 .evidence-item { display:block;background:#fff;color:var(--ink);font-size:11px;text-align:left;justify-content:start;border-bottom:1px solid var(--line);width:100%;overflow-wrap:anywhere; }
 #evidence-results { max-height:260px;overflow:auto; }
 .comparison { display:grid;grid-template-columns:1fr 1fr;gap:12px; }

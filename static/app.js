@@ -1,6 +1,6 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
-const stageNames = {1:'识别规格与候选构件',2:'确认首尾与名义长度',3:'跨视图匹配与单根统计'};
+const stageNames = {1:'钢材规格与视图目录',2:'确认首尾与名义长度',3:'跨视图匹配与单根统计'};
 const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, activeObservation=null, clickMode='', evidenceFocus=null, manualTargets=[], matchSource=null;
@@ -30,6 +30,28 @@ function setField(target,key,value,type='text') { target[key]=type==='number'?(v
 function table(headers,rows) { const table=node('table'),head=node('tr');headers.forEach(h=>head.append(node('th',h)));table.append(head);rows.forEach(values=>{const tr=node('tr');values.forEach(value=>{const td=node('td');if(value instanceof Node)td.append(value);else td.textContent=value==null?'待确认':typeof value==='object'?JSON.stringify(value):String(value);tr.append(td);});table.append(tr);});const wrap=node('div','',{class:'table-wrap'});wrap.append(table);return wrap; }
 function button(text,action,style='') { const b=node('button',text,{type:'button',class:style});b.onclick=action;return b; }
 function refreshJson() { $('#json-editor').value=JSON.stringify(draft.data,null,2); }
+function renderInventory() {
+    const target=$('#discovery-inventory');target.replaceChildren();target.hidden=stageNumber!==1;
+    if(stageNumber!==1)return;
+    const inventory=draft.data.discovery_inventory;
+    if(!inventory){target.append(node('p','目录尚未生成。'));return;}
+    const counts=inventory.view_counts;
+    target.append(node('h3',`第一阶段输出：${inventory.profile_count} 种钢材规格 · ${counts.PLAN} 个平面 · ${counts.ELEVATION} 个立面 · ${counts.ISOMETRIC} 个概览`));
+    target.append(node('p',inventory.count_basis+' '+inventory.scope));
+    target.append(table(['截面规格','组合组件数','原图文字证据'],inventory.profiles.map(profile=>{
+        const proof=node('details');proof.append(node('summary',`${profile.evidence.length} 处标注，展开核对`));
+        proof.append(table(['文件 / 页','原始文字','证据 ID'],profile.evidence.map(e=>[`${e.file} · 第 ${e.page} 页`,e.text,e.id])));
+        return [profile.profile,profile.component_counts.join('、'),proof];
+    })));
+    if(inventory.unverified_profiles.length)target.append(node('p',`模型提出但缺少规格文字证据（不计入种数）：${inventory.unverified_profiles.join('、')}`));
+    for(const [kind,label]of [['PLAN','平面目录'],['ELEVATION','立面目录'],['ISOMETRIC','概览目录']]){
+        const views=inventory.views[kind]||[];
+        target.append(node('h4',`${label}（${views.length}）`));
+        target.append(table(['图纸原始标题','标高 / 轴线','原图文件 / 页','标题证据 ID','视图区域'],views.map(v=>{
+            return [v.title,kind==='PLAN'?(v.elevation_m==null?'标高待确认':`EL.${Number(v.elevation_m).toFixed(3)} (${v.elevation_basis})`):kind==='ELEVATION'?(v.fixed_label||'轴线待确认'):'覆盖核对',`${v.file||v.page_id} · 第 ${v.page||1} 页`,(v.evidence_ids||[]).join('、'),v.region_identified?'已识别，待核对':'待补充区域'];
+        })));
+    }
+}
 async function loadJobs() { const list=await api('/api/jobs');$('#job-list').replaceChildren(node('option','选择任务',{value:''}));for(const item of list)$('#job-list').append(node('option',`${new Date(item.created_at).toLocaleString()} · ${stateNames[item.state]} · ${item.id.slice(0,8)}`,{value:item.id}));$('#job-list').value=jobId; }
 async function chooseJob(id) { if(dirty&&!window.confirm('当前草稿尚未保存，是否离开？'))return;clearTimeout(timer);jobId=id;history.replaceState(null,'',id?'/?job='+encodeURIComponent(id):'/');$('#task-trace').hidden=!id;stageKey='';dirty=false;draft=null;await poll(); }
 async function poll() { clearTimeout(timer);try { if(!jobId)return;job=await api(`/api/jobs/${jobId}`);$('#status').textContent=`${stateNames[job.state]||job.state} · ${jobId}`;$('#event-log').replaceChildren(...job.events.map(e=>node('li',`${new Date(e.at).toLocaleTimeString()} ${e.message}`)));if(job.error_detail)showError(Error(job.error_detail));$('#downloads').replaceChildren();for(const [url,label] of [[job.download_url,'下载 Excel'],[job.views_download_url,'下载截图与证据包']])if(url)$('#downloads').append(node('a',label,{href:url,class:'download'}));
@@ -37,7 +59,7 @@ $('#stage-tabs').replaceChildren(...job.stages.map(s=>button(`${s.stage}. ${stag
 const current=job.stages.find(s=>s.stage===Math.min(job.active_stage,3));const key=current?`${current.stage}:${current.revision}:${current.status}`:'';if(key!==stageKey&&!dirty){stageKey=key;if(current)await openStage(current.stage,false);}if(['queued','running','exporting'].includes(job.state))timer=setTimeout(poll,1800);await loadJobs(); }catch(e){showError(e);timer=setTimeout(poll,4000);} }
 async function openStage(n,checkDirty=true) { if(checkDirty&&dirty&&!window.confirm('当前修改尚未保存，是否切换阶段？'))return;try{draft=await api(`/api/jobs/${jobId}/stages/${n}`);stageNumber=n;pages=await api(`/api/jobs/${jobId}/pages`);matchSource=n===3?(await api(`/api/jobs/${jobId}/stages/2`)).data:null;dirty=false;manualTargets=[];activeView=null;activeObservation=null;$('#error').hidden=true;renderStage();}catch(e){showError(e);} }
 function renderStage() { $('#review').hidden=false;$('#stage-title').textContent=`阶段 ${stageNumber} · ${stageNames[stageNumber]}`;$('#stage-state').textContent=`版本 ${draft.revision} · ${stateNames[draft.status]}`;$('#stage-content').replaceChildren();$('#warnings').replaceChildren();const data=draft.data;const editable=['awaiting_review','approved','failed','interrupted'].includes(draft.status)&&!['queued','running','exporting'].includes(job.state);$('#save').disabled=!editable;$('#approve').disabled=draft.status!=='awaiting_review';$('#retry').disabled=!(job.active_stage===stageNumber||job.active_stage===4&&stageNumber===3)||!['failed','interrupted','awaiting_review'].includes(job.state);$('#approve').textContent=stageNumber===3?'确认并导出单根统计':'确认并进入下一阶段';
-if(!data.views&&stageNumber<=2){$('#stage-content').append(node('p','该阶段尚未生成草稿。执行失败时可修正 API 设置后重试。'));refreshJson();renderHistory();return;}
+renderInventory();if(!data.views&&stageNumber<=2){$('#stage-content').append(node('p','该阶段尚未生成草稿。执行失败时可修正 API 设置后重试。'));refreshJson();renderHistory();return;}
 const warnings=stageNumber===1?data.warnings||[]:stageNumber===2?[...(data.warnings||[]),...(data.frame_issues||[]),...(data.candidates||[]).filter(c=>!c.confirmed).map(c=>`${c.observation_id}：${c.issues.join('；')}`)]:data.exceptions.map(e=>`${e.observation_id}：${e.issues.join('；')}`);warnings.forEach(w=>$('#warnings').append(node('p',w)));
 if(stageNumber<=2){renderFrame();renderObservations();}else renderMatches();refreshJson();renderHistory(); }
 function renderHistory() { const target=$('#history');target.replaceChildren(node('h3','修改与确认记录'));for(const snap of draft.snapshots||[]){const row=node('p',`${snap.at} · v${snap.revision} · ${snap.action} · ${snap.reason} `);row.append(button('载入此草稿',()=>{if(!snap.data||!Object.keys(snap.data).length)return;draft.data=structuredClone(snap.data);mark();renderStage();dirty=true;}));target.append(row);} }

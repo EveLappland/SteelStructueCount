@@ -18,6 +18,7 @@ from app.pipeline import (ViewResponse, AnalysisResponse, model_call, parse_mode
                           evidence_aliases, repair_model_evidence)
 from app.pipeline import model_schema, request_options, BoundaryResponse, apply_boundary_reviews
 from app.store import JobStore, StoreError
+from app.discovery_inventory import build_inventory
 from test_entities import fixture, observation
 
 
@@ -126,6 +127,16 @@ class ApiWorkflowTest(unittest.TestCase):
 
     def stage(self,n):return self.client.get(self.base+f'/stages/{n}').json()
 
+    def test_first_stage_returns_catalog_counts_and_original_evidence(self):
+        stage=self.stage(1)
+        inventory=stage['data']['discovery_inventory']
+        self.assertEqual(inventory['profile_count'],1)
+        self.assertEqual(inventory['profiles'][0]['profile'],'HEA260')
+        self.assertEqual(inventory['profiles'][0]['evidence'][0]['text'],'HEA260')
+        self.assertEqual(inventory['view_counts']['PLAN'],1)
+        self.assertEqual(inventory['view_counts']['ELEVATION'],1)
+        self.assertEqual(stage['revision'],self.stage(1)['revision'])
+
     def approve(self,n):
         stage=self.stage(n)
         response=self.client.post(self.base+f'/stages/{n}/approve',json={'revision':stage['revision'],'acknowledge_pending':True})
@@ -225,6 +236,9 @@ class NativePdfTest(unittest.TestCase):
             output=Path(tmp)/'raw.json'
             result=model_call(client,'deepseek-flash','test',{'id':'p','source_path':str(path),'page':1},output,ViewResponse)
             self.assertTrue(result['views'])
+            actual_prompt=client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['text']
+            self.assertIn('HEA180 /EPB',actual_prompt)
+            self.assertIn('第一阶段必须先建立钢材规格目录和视图目录',actual_prompt)
             self.assertTrue(output.with_suffix('.truncated.json').exists())
             self.assertEqual(client.chat.completions.create.call_count,2)
             self.assertEqual(client.chat.completions.create.call_args.kwargs['extra_body']['thinking']['type'],'disabled')
@@ -344,9 +358,10 @@ class NativePdfTest(unittest.TestCase):
         folder=Path(os.getenv('LLM_SAMPLE_DIR',str(Path.home()/'Desktop'/'TeklaProgram'/'建模图纸资料'/'建模图纸资料')))
         files=[folder/f'4422-AI-DU-302003PR01SA-0{n}_00.pdf' for n in range(1,6)]
         if not all(p.exists() for p in files):self.skipTest('设置 LLM_SAMPLE_DIR 后运行真实图纸检查。')
-        titles=[];text=[]
+        titles=[];text=[];native_pages=[]
         for i,path in enumerate(files):
             page=extract_page({'id':f'f{i:03d}-p001','source_path':str(path),'page':1,'file':path.name})
+            native_pages.append(page)
             titles.extend(page['titles']);text.extend(e['text'] for e in page['texts'])
         self.assertEqual(sum(t['kind']=='PLAN' for t in titles),5)
         self.assertEqual(sum(t['kind']=='ELEVATION' for t in titles),7)
@@ -357,3 +372,9 @@ class NativePdfTest(unittest.TestCase):
         self.assertTrue(any('-100mm BELOW TOS' in t for t in text))
         self.assertIn('480',text)
         self.assertIn('925',text)
+        inventory=build_inventory({'views':[],'observations':[]},native_pages)
+        self.assertEqual(inventory['profile_count'],16)
+        self.assertEqual(inventory['view_counts'],{'PLAN':5,'ELEVATION':7,'ISOMETRIC':1})
+        self.assertEqual({p['profile'] for p in inventory['profiles']},
+            {'HEA160','HEA180','HEA200','HEA240','HEA260','HEA300','HEA340','HEA360',
+             'HEA450','HEA500','HEB550','IPET270','IPET300','L80*8','L100*10','L120*12'})

@@ -23,6 +23,7 @@ from .geometry import build_lengths, match_entities, section, validate_stage_one
 from .llm_runner import _api_settings
 from .native_pdf import evidence_index, extract_page, view_context, write_json
 from .audit import AuditLog
+from .discovery_inventory import build_inventory
 
 
 class ViewResponse(Contract):
@@ -175,6 +176,9 @@ def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
 
 
 def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None):
+    if contract in (ViewResponse,AnalysisResponse):
+        guidance=(Path(__file__).parent/'prompts'/'stage_one.md').read_text(encoding='utf-8')
+        prompt=guidance+'\n\n'+prompt
     schema = json.dumps(model_schema(contract), ensure_ascii=False)
     options={**request_options(model),**(options_override or {})}
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
@@ -280,9 +284,9 @@ def validate_draft(directory, stage, data, stage_two=None):
         draft=contract.model_validate(data).model_dump()
         native=evidence_index(pages, draft['manual_evidence'])
         one={key:value for key,value in draft.items() if key in StageOne.model_fields}
+        one['discovery_inventory']=build_inventory(one,pages)
+        one['profile_catalog']=[p['profile'] for p in one['discovery_inventory']['profiles']]
         one=validate_stage_one(one,native,{p['id'] for p in pages})
-        one['profile_catalog']=sorted({section(o['profile'])[0] for o in one['observations'] if o['profile']}
-                                      | set(one['profile_catalog']))
         # Recompute coverage after edits; deleting a view cannot silently make a complete set.
         one['warnings']=[w for w in one['warnings'] if not w.startswith('缺失视图：')]
         for page in pages:
@@ -498,16 +502,11 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
                 warnings.append(f"{page['file']} 未覆盖独立标题：{title['title']}；请补充视图。")
     if not observations:
         warnings.append('尚无候选构件，不能形成数量结果；请补充或重试。')
-    catalog=set()
-    for view in views:
-        if view['kind']=='ISOMETRIC':
-            continue
-        page=next(p for p in pages if p['id']==view['page_id'])
-        for item in view_context(page,view['bbox'])['texts']:
-            for match in re.finditer(r'\d+LF?\s*[- ]\s*L\d+\s*[X*×]\s*\d+|HE[AB]\d+|IPET?\d+|L\d+\s*[X*×]\s*\d+',item['text'],re.I):
-                catalog.add(section(match[0])[0])
     result=StageOne(views=views,frame=frame,observations=observations,
-                    profile_catalog=sorted(catalog),warnings=list(dict.fromkeys(warnings))).model_dump()
+                    warnings=list(dict.fromkeys(warnings))).model_dump()
+    inventory=build_inventory(result,pages)
+    audit.event('STAGE_ONE_INVENTORY',profile_count=inventory['profile_count'],profiles=[p['profile'] for p in inventory['profiles']],
+                view_counts=inventory['view_counts'],unverified_profiles=inventory['unverified_profiles'],reason=inventory['count_basis'])
     return validate_draft(directory,1,result)
 
 

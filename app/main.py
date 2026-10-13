@@ -17,10 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from .domain import StageAction, StageEdit
-from .pipeline import execute, pending_reasons, validate_draft, render_draft
+from .pipeline import execute, pending_reasons, validate_draft, render_draft, load_native
 from .native_pdf import inside
 from .store import JobStore, StoreError
 from .audit import AuditLog
+from .discovery_inventory import build_inventory
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -120,6 +121,11 @@ def create_app(root=ROOT, start_workers=True):
     @application.get('/api/jobs/{job_id}/stages/{stage}')
     def get_stage(job_id:str,stage:int):
         result=store.stage(job_id,stage)
+        if stage in (1,2) and 'views' in result['data']:
+            # Enrich existing v2 tasks without rewriting their approved history.
+            inventory=build_inventory(result['data'],load_native(directory(job_id)))
+            result['data']['discovery_inventory']=inventory
+            result['data']['profile_catalog']=[p['profile'] for p in inventory['profiles']]
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
         return result
 
