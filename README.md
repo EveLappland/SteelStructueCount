@@ -125,10 +125,18 @@ PDF 渲染测试使用第二张样本图纸中人工目视核对的两个平面�
 使用已有 `.env` API 对第二张样本进行真实自动定位验收（会调用 API）：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\test_ai_view_localization.py
+.\.venv\Scripts\python.exe tools\test_ai_view_localization.py --file "C:\路径\4422-AI-DU-302003PR01SA-02_00.pdf" --reference tests\fixtures\plan_02_views.json --output tmp\ai_view_localization
 ```
 
-输出到 `tmp/ai_view_localization/`，包括原始 AI 框、补边后区域、300 DPI 图片、模型响应、日志和报告。参考裁切框只在 AI 定位完成后用于检查原生标注覆盖，不发送给 AI；`passed` 表示程序和独立参考检查通过，`ai_review_all_passed` 单独记录 AI 自评。加 `--reuse-proposals` 可在原生数据未改变时复用原始定位响应，再执行新的裁切复核；不要反复调用直到模型自评“通过”。
+输出包括原始 AI 框、补边后区域、300 DPI 图片、模型响应、日志和报告。`--file` 可指定任意含原生文字与矢量的 PDF，`--page` 指定页码（默认 1）；默认目录按 PDF 文件名和页码隔离，位于 `tmp/ai_view_localization/<文件名>/page_001/`，可用 `--output` 指定其他目录。不限制视图种类和数量。
+
+`--reference` 是可选人工参考 JSON，需要 `file`、`page` 和 `views: [{title,bbox}]`，文件名和页码必须与输入一致；参考框不发送给 AI。无参考时报告明确标注 `reference_provided:false`，各视图 `reference_passed:null`，`passed` 仅表示程序边界检查通过，不能证明完整性。有参考时还校验参考标注覆盖和视图集合，不再固定要求两个视图。`ai_review_all_passed` 单独记录 AI 自评。加 `--reuse-proposals` 可在原生数据未改变时复用原始定位响应，再执行新的裁切复核；不要反复调用直到模型自评“通过”。
+
+测试其他 PDF 示例：
+
+```powershell
+.\.venv\Scripts\python.exe tools\test_ai_view_localization.py --file "C:\图纸\other.pdf" --page 1
+```
 
 第二个命令将两个高清 PNG、2600 像素预览及报告写入 `tmp/pdf_render_test/`（Git 忽略）。`render_png(entry, dpi=300)` 直接从 PDF 矢量渲染，无损输出且不受预览尺寸限制；现有 AI 输入和网页预览仍使用 JPEG，新增测试不会自动提高所有 API 请求的图片尺寸。
 
