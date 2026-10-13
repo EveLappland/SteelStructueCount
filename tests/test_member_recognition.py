@@ -75,6 +75,16 @@ class MemberRecognitionTests(unittest.TestCase):
         row=validate_rows([self.row],self.view,self.one)[0]
         with self.assertRaises(ValueError):validate_ledger({**self.one,'view_members':[row,row]})
 
+    def test_diagonal_formula_must_agree_with_length(self):
+        row={**self.row,'basis':'端点水平3000、竖向4000，sqrt(3000²+4000²)=5000mm','length_mm':5000}
+        good=validate_rows([row],self.view,self.one)[0]
+        self.assertEqual(good['checks'],[])
+        self.assertEqual(good['length_math_check']['hypotenuse_mm'],[5000])
+        bad=validate_rows([{**row,'length_mm':8742}],self.view,self.one)[0]
+        self.assertTrue(any('勾股计算式不一致' in issue for issue in bad['checks']))
+        # Keep the original model value for audit, do not silently choose endpoints.
+        self.assertEqual(bad['length_mm'],8742)
+
     def test_user_bottom_beam_has_plan_and_alignment_names(self):
         plan={**self.view,'title':'PLAN AT EL.107.500(TOS)'}
         elevation={'id':'el1','kind':'ELEVATION','title':'ELEVATION ON ALIGNMENT 302003-PR001I/1',

@@ -1,5 +1,7 @@
 """Compact per-view ledger. PDF positions only bind the image to native evidence."""
 import json
+import math
+import re
 from pathlib import Path
 
 from pydantic import Field, StrictInt
@@ -84,10 +86,16 @@ def validate_rows(rows, view, stage_one):
         if len(row['view_tags']) < 2: issues.append('跨视图标签尚不完整')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')
+        formulas=re.findall(r'(?:sqrt|√)\s*\(\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\+\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\)',row['basis'],re.I)
+        if formulas and row['length_mm'] is not None:
+            computed=[math.hypot(float(a),float(b)) for a,b in formulas]
+            if all(abs(row['length_mm']-value)>1 for value in computed):
+                issues.append('长度字段与依据中的勾股计算式不一致，需重新确认；不自动猜选跨度')
         if row['issue']: issues.insert(0, row['issue'])
         result.append({**row, 'id': raw.get('id', f"{view['id']}-m{index:03d}"),
                        'source_view': view['id'], 'page_id': view['page_id'],
                        'evidence_ids':raw.get('evidence_ids',[]),
+                       'length_math_check':{'hypotenuse_mm':[round(math.hypot(float(a),float(b)),3) for a,b in formulas]},
                        'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review'})
     return result
 
