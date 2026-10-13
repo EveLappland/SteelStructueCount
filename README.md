@@ -41,6 +41,10 @@ DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明�
 
 ## 坐标与长度口径
 
+第二阶段自动定位采用“AI 提框＋原生证据检查”。模型同时返回结构区域、完整裁切区域、边界理由和证据 ID；程序以独立标题为锚点，将局部轴线、尺寸候选、规格及说明按到结构区域的距离分配，补入完整文字框和附近短矢量。扩边受模型区域附近的窗口限制，防止把页框轴号和右侧引用表纳入。相邻视图标题、部分图签侵入、证据歧义或无效引用转为待确认。人工已确认区域保留，不自动覆盖。
+
+`View.localization` 和 `VIEW_REGION_CHECKED` 日志保存原始框、最终框、扩边证据及问题。自动区域另存 `views/<id>_300dpi.png`，通过视图文件接口读取，并随 ZIP 导出。AI 的裁切自评只是复核意见，不能代替原生证据覆盖检查；真实测试曾出现可见完整构件被错误报告为截断的情况。
+
 - 保存原始轴名、偏移和标高，同时求解毫米坐标。X/Y/Z 是项目全局方向，不是页面像素方向；每个平面/立面定义两个显示方向和一个固定方向，镜像/旋转不改变语义轴名。
 - X/Y 轴线需要一个有证据的坐标锚点；尺寸链的 `distance_mm` 是沿全局正方向的有符号差。端点使用 `axis_label` 或 `value_mm`，两者不能同时填写；偏移可用 `towards` 指明朝向哪根轴线。
 - Z 使用 EL 值和单位，相对于 `z_origin_m`。保留 TOS/BOB，只有有证据的 `offset_mm` 才能转换为其他基准。低于 TOS 100 mm 的水平斜撑必须应用偏移。缺少转换不能假设为中心线。
@@ -117,6 +121,14 @@ PDF 渲染测试使用第二张样本图纸中人工目视核对的两个平面�
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_pdf_rendering.py -v
 .\.venv\Scripts\python.exe tools\render_sample_views.py
 ```
+
+使用已有 `.env` API 对第二张样本进行真实自动定位验收（会调用 API）：
+
+```powershell
+.\.venv\Scripts\python.exe tools\test_ai_view_localization.py
+```
+
+输出到 `tmp/ai_view_localization/`，包括原始 AI 框、补边后区域、300 DPI 图片、模型响应、日志和报告。参考裁切框只在 AI 定位完成后用于检查原生标注覆盖，不发送给 AI；`passed` 表示程序和独立参考检查通过，`ai_review_all_passed` 单独记录 AI 自评。加 `--reuse-proposals` 可在原生数据未改变时复用原始定位响应，再执行新的裁切复核；不要反复调用直到模型自评“通过”。
 
 第二个命令将两个高清 PNG、2600 像素预览及报告写入 `tmp/pdf_render_test/`（Git 忽略）。`render_png(entry, dpi=300)` 直接从 PDF 矢量渲染，无损输出且不受预览尺寸限制；现有 AI 输入和网页预览仍使用 JPEG，新增测试不会自动提高所有 API 请求的图片尺寸。
 

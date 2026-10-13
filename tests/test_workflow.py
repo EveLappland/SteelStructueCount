@@ -146,6 +146,12 @@ class ApiWorkflowTest(unittest.TestCase):
             'settings':{'base_url':'https://example.test','api_key':'second-stage-secret','model':'test'}})
         self.assertEqual(response.status_code,200,response.text)
         self.legacy_draft['views'][1]['title']='ELEVATION ON ALIGNMENT A'
+        for index,view in enumerate(self.legacy_draft['views']):
+            view['bbox']=[0,0,.49,1] if index==0 else [.51,0,1,1]
+            view['structure_bbox']=[.06,.2,.4,.4] if index==0 else [.55,.2,.9,.4]
+        for o in self.legacy_draft['observations']:
+            o['image_start']=[.1,.25] if o['view_id']=='plan' else [.6,.25]
+            o['image_end']=[.35,.25] if o['view_id']=='plan' else [.85,.25]
         with patch('app.pipeline.OpenAI') as constructor,patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
             self.app.state.worker(identity,2)
             self.assertTrue(constructor.called);self.assertTrue(model.called)

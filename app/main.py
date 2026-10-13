@@ -212,12 +212,13 @@ def create_app(root=ROOT, start_workers=True):
         for n in (1,2):
             try:
                 allowed.update(v['id']+'.jpg' for v in store.stage(job_id,n)['data'].get('views',[]))
+                allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[]) if v.get('localization'))
             except StoreError:
                 pass
         path=folder/'views'/filename
         if filename not in allowed or not path.is_file():
             raise HTTPException(404,'未找到图纸预览。')
-        return FileResponse(path,media_type='image/jpeg')
+        return FileResponse(path,media_type='image/png' if path.suffix=='.png' else 'image/jpeg')
 
     def output(job_id,field,media):
         job=store.get(job_id)

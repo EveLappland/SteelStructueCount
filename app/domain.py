@@ -70,10 +70,14 @@ class View(Contract):
     axis_marks: list[AxisMark] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     region_confirmed: bool = True
+    structure_bbox: list[float] | None = Field(default=None,min_length=4,max_length=4)
+    boundary_reason: str = ''
+    boundary_evidence_ids: list[str] = Field(default_factory=list)
+    localization: dict = Field(default_factory=dict)
 
     @model_validator(mode='after')
     def valid_box(self):
-        for box in (self.bbox, self.title_bbox):
+        for box in (self.bbox, self.title_bbox,*([self.structure_bbox] if self.structure_bbox is not None else [])):
             if not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
                 raise ValueError('视图区域必须是有效的整页归一化矩形')
         if self.kind != 'ISOMETRIC' and self.visible_axes:
