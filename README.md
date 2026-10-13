@@ -60,12 +60,26 @@ Copy-Item .env.example .env
 | `GET /api/jobs/{id}/views/{filename}` | 页面或视图 JPEG |
 | `GET /api/jobs/{id}/download` | 已确认的 Excel |
 | `GET /api/jobs/{id}/views-download` | 已确认的截图/坐标/证据 ZIP |
+| `GET /api/jobs/{id}/logs?after=0&limit=200` | 分页读取可解释审计事件（JSONL 游标） |
+| `GET /api/jobs/{id}/logs-download` | 下载完整脱敏任务日志，执行中也可使用 |
 
 旧 revision 返回 409；无效坐标/证据或未明确允许的待确认项返回 422。重复确认不会重复创建阶段或导出。任务执行中不能修改草稿。模型给出的描述性视图/观察 ID 在校验前被替换为服务端 ID，不能用作文件名。
 
 SQLite 位于 `data/jobs_v2.sqlite3`，存储任务、阶段、版本、历史和事件；重启后将排队/执行中的工作标记为 interrupted，需手动重试。失败/中断的第一阶段重试会重新校验并复用已保存的匹配响应，只请求尚未完成的识别；新请求以模型、地址、提示词、契约、PDF 内容和裁切区域的哈希签名匹配。旧响应无签名时仅在上传文件未修改时恢复。API 重试可传 `reuse_saved:false` 强制重新请求；等待人工确认时的普通重试仍重新识别。重试人工编辑过的草稿时，新模型结果保存为历史提案，人工草稿不被覆盖。
 
 `data/jobs/<id>/` 保存 uploads、native、views、responses 和 output。ZIP 包含三个阶段的 JSON、原始文字/矢量、图像、原始响应和人工修改历史。Excel 包含数量长度汇总、逐根台账、观察台账、长度计算、匹配、异常、历史和覆盖说明。
+
+## 可解释日志与版本管理
+
+网页的“处理依据与 API 日志”提供请求耗时、响应校验、ID 规范化、证据修复、长度计算式、坐标基准、匹配理由和排除原因。完整事件写入任务目录的 `logs/events.jsonl`；实际请求的提示词与契约写入对应 `.prompt.txt`，原始响应与请求哈希分别写入 `.json` 和 `.request.json`。这些文件随最终 ZIP 导出。
+
+模型的 ID 在领域校验前由服务端替换。模型缩短的矢量 ID 只有在唯一对应一个原始线段时才补全；无法唯一对应的证据和越界首尾转为待确认，并保留原始响应。`discovery_checkpoint.json` 记录已识别视图的进行中检查点，不代表确认数量。
+
+API 地址、Key、认证头不作为日志字段保存；已知密钥、Bearer 值和 URL 中的认证参数在日志及错误堆栈中脱敏。长请求每 30 秒记录等待事件，结束后记录耗时、token usage、finish_reason 和响应文件，以区分 API 等待、返回空内容和结构校验失败。
+
+项目已建立本地 Git 仓库。`.gitignore` 排除 `.env` 与其变体、虚拟环境、缓存、任务目录、SQLite、日志、PDF、Excel 和 ZIP；仅空白 `.env.example` 跟踪入库。没有向远端上传代码或任务数据。
+
+使用真实图纸做程序验收时，阶段确认可携带 `reason`，例如“流程验证，允许待确认项继续；不是工程确认”。完成状态只表示程序完成三阶段及导出，不代表待确认构件已得到工程认可。
 
 旧任务文件保留，不转换成 v2；旧 Excel 不能自动成为新坐标台账。`llm_runner.py` 和旧规则测试仅保留历史校验能力，Web 任务入口使用新的 pipeline。
 
