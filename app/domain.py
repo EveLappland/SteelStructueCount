@@ -181,6 +181,9 @@ class StageOne(Contract):
 
 
 class StageTwo(StageOne):
+    recognition_mode: Literal['coordinate_legacy','view_ledger'] = 'coordinate_legacy'
+    view_members: list[dict] = Field(default_factory=list)
+    view_analysis: list[dict] = Field(default_factory=list)
     candidates: list[LengthCandidate] = Field(default_factory=list)
     length_catalog: list[dict] = Field(default_factory=list)
     frame_issues: list[str] = Field(default_factory=list)

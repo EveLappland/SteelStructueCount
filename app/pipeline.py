@@ -8,6 +8,7 @@ import shutil
 import time
 import threading
 import os
+import struct
 from functools import partial
 from urllib.parse import urlparse
 from pathlib import Path
@@ -25,6 +26,7 @@ from .native_pdf import evidence_index, extract_page, view_context, write_json
 from .audit import AuditLog
 from .discovery_inventory import build_inventory
 from .view_locator import localization_prompt, refine_view_regions
+from .member_recognition import MemberResponse, make_input, recognition_prompt, validate_rows, validate_ledger
 
 
 class ViewResponse(Contract):
@@ -89,7 +91,13 @@ def model_schema(contract):
 
 def parse_model_content(content, contract, entry, audit=None):
     content=re.sub(r'^```(?:json)?\s*|\s*```$', '',content.strip(),flags=re.I)
-    payload=json.loads(content)
+    def unique_keys(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError(f'JSON 存在重复键 {key}，不能丢弃或覆盖前面的识别结果。')
+            result[key]=value
+        return result
+    payload=json.loads(content,object_pairs_hook=unique_keys)
     # Model IDs are descriptive text, never file names or application identities.
     # Assign our own identities BEFORE the strict domain validator sees them.
     if contract is ViewResponse and isinstance(payload,dict) and isinstance(payload.get('views'),list):
@@ -186,7 +194,7 @@ def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
     return sorted(set(by_id)-seen)
 
 
-def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None):
+def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None,validation_retry=False):
     if contract in (ViewResponse,AnalysisResponse):
         guidance=(Path(__file__).parent/'prompts'/'stage_one.md').read_text(encoding='utf-8')
         if not prompt.startswith(guidance+'\n\n'):
@@ -196,6 +204,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
                                  'page':entry['page'],'crop':entry.get('crop'),'options':options,
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
+                                 'image_dpi':entry.get('image_dpi'),
                                  'source_hash':hashlib.sha256(Path(entry['source_path']).read_bytes()).hexdigest()},sort_keys=True)
     signature=hashlib.sha256(request_material.encode()).hexdigest()
     metadata_path=response_path.with_suffix('.request.json')
@@ -271,12 +280,20 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                 preserved_file=str(truncated.relative_to(audit.directory)),
                 reason='输出额度被思考内容耗尽，保留截断响应，仅重试本次请求并关闭 thinking。')
             return model_call(client,model,prompt,entry,response_path,contract,emit=emit,audit=audit,
-                              options_override={'extra_body':{'thinking':{'type':'disabled'}}})
+                              options_override={'extra_body':{'thinking':{'type':'disabled'}}},validation_retry=validation_retry)
         raise ValueError('模型输出被 token 限额截断；原始响应已保存，不能使用部分 JSON。')
     try:
         result=parse_model_content(response_content(raw),contract,entry,audit)
     except Exception as exc:
         if audit:audit.event('MODEL_VALIDATION_FAILED',response_file=relative,error_type=type(exc).__name__,error=str(exc))
+        if contract is MemberResponse and not validation_retry:
+            invalid=response_path.with_suffix('.invalid.json')
+            shutil.copyfile(response_path,invalid)
+            if emit:emit('构件响应格式无效，保留原响应并重试一次。')
+            return model_call(client,model,prompt+'\n上次响应格式错误：'+str(exc)+
+                              '\n仅返回一个members数组。所有JSON键只出现一次，禁止重复键；不得用空数组覆盖结果。',
+                              entry,response_path,contract,emit=emit,audit=audit,options_override=options_override,
+                              validation_retry=True)
         raise
     if audit:audit.event('MODEL_VALIDATION_PASSED',response_file=relative,contract=contract.__name__)
     return result
@@ -295,6 +312,8 @@ def validate_draft(directory, stage, data, stage_two=None):
     if stage in (1,2):
         contract=StageOne if stage==1 else StageTwo
         draft=contract.model_validate(data).model_dump()
+        if stage==2 and draft['recognition_mode']=='view_ledger':
+            return validate_ledger(draft)
         native=evidence_index(pages, draft['manual_evidence'])
         one={key:value for key,value in draft.items() if key in StageOne.model_fields}
         one['discovery_inventory']=build_inventory(one,pages)
@@ -391,7 +410,7 @@ def catalog_only(directory,emit,audit):
     return result
 
 
-def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=None):
+def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=None,ledger=False):
     base_url,key,model=_api_settings(settings)
     if urlparse(base_url).hostname=='api.deepseek.com' and model=='deepseek-v4-pro':
         raise ValueError('图纸识别请使用 DeepSeek 官方视觉模型 deepseek-flash；deepseek-v4-pro 不在官方视觉支持列表。')
@@ -406,6 +425,7 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
     native_evidence=evidence_index(pages,(seed or {}).get('manual_evidence',[]))
     aliases=evidence_aliases(native_evidence)
     views,observations,warnings=[],[],[]
+    view_members,view_analysis=[],[]
     conflicted_axes=set()
     response_folder=directory/'responses'/f'attempt-{uuid.uuid4().hex}'
     frame=CoordinateFrame.model_validate((seed or {}).get('frame',{})).model_dump()
@@ -463,6 +483,52 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
                 continue
             if not view.get('region_confirmed',True):
                 warnings.append(f"{view['title']} 的裁切未通过边界检查，需修正区域后重试；未生成构件观察。")
+                view_analysis.append({'view_id':view['id'],'status':'region_pending','member_cnt':0})
+                continue
+            if ledger:
+                emit(f"识别视图 {view['title']} 的钢材标签、拼接分段和长度台账。")
+                bundle=make_input(page,view,seed or {'views':payload['views'],'profile_catalog':[]})
+                image=render_png({**entry,'crop':view['bbox']},dpi=300)
+                (directory/'views'/f"{view['id']}_300dpi.png").write_bytes(image)
+                width,height=struct.unpack('>II',image[16:24])
+                bundle['image']={'width_px':width,'height_px':height,'dpi':300,'format':'PNG'}
+                bundle_path=directory/'member_inputs'/f"{view['id']}.json"
+                write_json(bundle_path,bundle)
+                audit.event('MEMBER_INPUT_PACKED',view_id=view['id'],title=view['title'],
+                            input_file=str(bundle_path.relative_to(directory)),
+                            profile_count=len(bundle['profile_catalog']),text_count=len(bundle['native_evidence']['texts']),
+                            vector_total=bundle['native_evidence']['vector_total'],
+                            vector_context_truncated=bundle['native_evidence']['vector_context_truncated'],
+                            reason='沿用第一阶段目录和视图ID；PDF坐标只用于归属图像与证据。')
+                try:
+                    analysis=call(client,model,recognition_prompt(bundle),
+                                  {**entry,'id':view['id'],'crop':view['bbox'],'image_dpi':300},
+                                  response_folder/f"{view['id']}_members.json",MemberResponse)
+                    rows=validate_rows(analysis['members'],view,seed or {'views':payload['views'],'profile_catalog':[]})
+                    view_members.extend(rows)
+                    count=sum(r['member_cnt'] for r in rows)
+                    audit.event('MEMBER_LABEL_COUNT_CHECK',view_id=view['id'],label_count=len(bundle['profile_labels']),
+                                member_cnt=count,counts_equal=count==len(bundle['profile_labels']),
+                                reason='标签数用于复核；拼接和一标多根可产生差异，不据此自动改数量。')
+                    if count!=len(bundle['profile_labels']):
+                        warnings.append(f"{view['title']}：{len(bundle['profile_labels'])}处规格标签与{count}个构件段不一致，请核对拼接、一标多根或漏识别。")
+                    status='completed' if rows else 'empty'
+                    if not rows:warnings.append(f"{view['title']} 未返回构件，需核对遗漏。")
+                    for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row,
+                                               reason='AI候选台账，待人工核对；未执行跨视图去重。')
+                    if bundle['native_evidence']['vector_context_truncated']:
+                        warnings.append(f"{view['title']} 矢量上下文已截取，完整原始证据保存在 native 目录。")
+                    view_analysis.append({'view_id':view['id'],'status':status,'member_cnt':count,
+                                          'label_count':len(bundle['profile_labels']),
+                                          'input_file':str(bundle_path.relative_to(directory))})
+                    emit(f"{view['title']} 返回 {len(rows)} 行、{count} 个构件段（未去重，待复核）。")
+                except Exception as exc:
+                    message=audit.scrub(str(exc))
+                    warnings.append(f"{view['title']} 构件识别失败：{message}；保留其他视图结果，显式重试。")
+                    view_analysis.append({'view_id':view['id'],'status':'failed','error':message,'member_cnt':0})
+                    audit.event('VIEW_MEMBER_RECOGNITION_FAILED',view_id=view['id'],error=message)
+                write_json(directory/'discovery_checkpoint.json',{'views':views,'view_members':view_members,
+                           'view_analysis':view_analysis,'warnings':warnings,'recognition_mode':'view_ledger'})
                 continue
             emit(f"识别视图 {view['title']} 中的候选构件首尾与尺寸关系。")
             context=view_context(page,view['bbox'])
@@ -560,6 +626,11 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
         for title in page['titles']:
             if title['title'] not in present:
                 warnings.append(f"{page['file']} 未覆盖独立标题：{title['title']}；请补充视图。")
+    if ledger:
+        result=StageTwo(**{**(seed or {}),'views':views,'analysis_pending':False,
+                          'observations':[],'warnings':list(dict.fromkeys(warnings))},
+                        recognition_mode='view_ledger',view_members=view_members,view_analysis=view_analysis).model_dump()
+        return validate_ledger(result)
     if not observations:
         warnings.append('尚无候选构件，不能形成数量结果；请补充或重试。')
     result=StageOne(views=views,frame=frame,observations=observations,
@@ -584,6 +655,8 @@ def pending_reasons(stage,data):
     if stage==1:
         return data.get('warnings',[])+(['没有候选构件。'] if not data.get('analysis_pending') and not data.get('observations') else [])
     if stage==2:
+        if data.get('recognition_mode')=='view_ledger':
+            return data.get('warnings',[])+[f"{r['id']}：{'; '.join(r['checks'])}" for r in data['view_members'] if r['checks']]
         return data.get('warnings',[])+data.get('frame_issues',[])+[c['observation_id'] for c in data['candidates'] if not c['confirmed']]
     return [e['observation_id'] for e in data['exceptions']]
 
@@ -664,12 +737,14 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
     elif stage==2:
         one=store.stage(job_id,1)['data']
         if one.get('analysis_pending'):
-            one=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=one)
+            one=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=one,ledger=True)
         render_draft(directory,one)
-        result=build_lengths(one,stage_evidence(directory,one))
+        result=one if one.get('recognition_mode')=='view_ledger' else build_lengths(one,stage_evidence(directory,one))
         for candidate in result['candidates']:
             audit.event('LENGTH_EVALUATED',**candidate,reason='程序由尺寸链、标高基准与端点差计算；像素不能证明长度。')
     elif stage==3:
+        if store.stage(job_id,2)['data'].get('recognition_mode')=='view_ledger':
+            raise ValueError('新的逐视图台账尚未接入第三阶段去重，禁止交给旧坐标匹配器。')
         result=match_entities(store.stage(job_id,2)['data'])
         for match in result['matches']+result['conflicts']:audit.event('ENTITY_MATCH_EVALUATED',**match)
         for exception in result['exceptions']:audit.event('ENTITY_EXCLUDED',**exception)

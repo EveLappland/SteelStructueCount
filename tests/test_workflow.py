@@ -115,6 +115,12 @@ class ApiWorkflowTest(unittest.TestCase):
             response_path.parent.mkdir(parents=True,exist_ok=True)
             response_path.write_text('{"mock":true}',encoding='utf-8')
             if contract is ViewResponse:return {'views':data['views']}
+            from app.member_recognition import MemberResponse
+            if contract is MemberResponse:
+                import json
+                bundle=json.loads(prompt.split('输入包：\n',1)[1])
+                return {'members':[{'spec':'HEA240','view_tags':[v['id'] for v in bundle['view_catalog']],
+                                    'member_cnt':1,'length_mm':6000,'basis':'明确端部，标注6000','issue':None}]}
             view_id='plan' if '-view01' in str(response_path) else 'elevation-A'
             selected=[o for o in data['observations'] if o['view_id']==view_id]
             return {'frame':data['frame'],'observations':selected,'axis_marks':[],'warnings':[]}
@@ -159,16 +165,20 @@ class ApiWorkflowTest(unittest.TestCase):
         stage_two=self.client.get(base+'/stages/2').json()
         self.assertEqual(stage_two['status'],'awaiting_review')
         self.assertFalse(stage_two['data']['analysis_pending'])
-        self.assertEqual(len(stage_two['data']['observations']),2)
-        self.assertTrue(all(c['confirmed'] for c in stage_two['data']['candidates']))
-        for number in (2,3):
-            current=self.client.get(base+f'/stages/{number}').json()
-            response=self.client.post(base+f'/stages/{number}/approve',json={'revision':current['revision'],'acknowledge_pending':True})
-            self.assertEqual(response.status_code,200,response.text)
-            self.app.state.worker(identity,number+1)
-        self.assertEqual(self.client.get(base).json()['state'],'completed')
-        self.assertEqual(self.client.get(base).json()['total'],1)
-        self.assertEqual(self.client.get(base+'/download').status_code,200)
+        self.assertEqual(stage_two['data']['recognition_mode'],'view_ledger')
+        self.assertEqual(len(stage_two['data']['view_members']),2)
+        self.assertEqual(stage_two['data']['observations'],[])
+        self.assertEqual(stage_two['data']['view_members'][0]['member_cnt'],1)
+        edited=stage_two['data']
+        edited['view_members'][0]['length_mm']=5000
+        edit=self.client.patch(base+'/stages/2',json={'revision':stage_two['revision'],'data':edited,'reason':'尺寸人工修正'})
+        self.assertEqual(edit.status_code,200,edit.text)
+        self.assertEqual(edit.json()['data']['view_members'][0]['length_mm'],5000)
+        stale=self.client.patch(base+'/stages/2',json={'revision':stage_two['revision'],'data':edited,'reason':'旧版本'})
+        self.assertEqual(stale.status_code,409)
+        response=self.client.post(base+'/stages/2/approve',json={'revision':edit.json()['revision'],'acknowledge_pending':True})
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(self.client.get(base).json()['state'],'awaiting_review')
 
     def tearDown(self):
         self.client.__exit__(None,None,None)

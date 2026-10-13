@@ -61,7 +61,7 @@ async function openStage(n,checkDirty=true) { if(checkDirty&&dirty&&!window.conf
 function renderStage() { $('#review').hidden=false;$('#stage-title').textContent=`阶段 ${stageNumber} · ${stageNames[stageNumber]}`;$('#stage-state').textContent=`版本 ${draft.revision} · ${stateNames[draft.status]}`;$('#stage-content').replaceChildren();$('#warnings').replaceChildren();const data=draft.data;const editable=['awaiting_review','approved','failed','interrupted'].includes(draft.status)&&!['queued','running','exporting'].includes(job.state);$('#save').disabled=!editable;$('#approve').disabled=draft.status!=='awaiting_review';$('#retry').disabled=!(job.active_stage===stageNumber||job.active_stage===4&&stageNumber===3)||!['failed','interrupted','awaiting_review'].includes(job.state);$('#approve').textContent=stageNumber===3?'确认并导出单根统计':'确认并进入下一阶段';
 renderInventory();if(!data.views&&stageNumber<=2){$('#stage-content').append(node('p','该阶段尚未生成草稿。执行失败时可修正 API 设置后重试。'));refreshJson();renderHistory();return;}
 const warnings=stageNumber===1?data.warnings||[]:stageNumber===2?[...(data.warnings||[]),...(data.frame_issues||[]),...(data.candidates||[]).filter(c=>!c.confirmed).map(c=>`${c.observation_id}：${c.issues.join('；')}`)]:data.exceptions.map(e=>`${e.observation_id}：${e.issues.join('；')}`);warnings.forEach(w=>$('#warnings').append(node('p',w)));
-if(stageNumber===1&&data.analysis_pending){$('#stage-content').append(node('p','第一阶段仅生成规格和视图目录，不调用 AI。确认后，第二阶段才定位视图区域、识别候选构件首尾和尺寸关系。'));}else if(stageNumber<=2){renderFrame();renderObservations();}else renderMatches();refreshJson();renderHistory(); }
+if(stageNumber===1&&data.analysis_pending){$('#stage-content').append(node('p','第一阶段仅生成规格和视图目录，不调用 AI。确认后，第二阶段才定位视图区域、识别候选构件首尾和尺寸关系。'));}else if(stageNumber===2&&data.recognition_mode==='view_ledger'){renderViewLedger();}else if(stageNumber<=2){renderFrame();renderObservations();}else renderMatches();refreshJson();renderHistory(); }
 function renderHistory() { const target=$('#history');target.replaceChildren(node('h3','修改与确认记录'));for(const snap of draft.snapshots||[]){const row=node('p',`${snap.at} · v${snap.revision} · ${snap.action} · ${snap.reason} `);row.append(button('载入此草稿',()=>{if(!snap.data||!Object.keys(snap.data).length)return;draft.data=structuredClone(snap.data);mark();renderStage();dirty=true;}));target.append(row);} }
 function renderFrame() { const data=draft.data,details=node('details','',{class:'frame-editor'});details.append(node('summary','项目坐标系、尺寸链与标高（毫米）'));const frame=data.frame;details.append(input('标高原点 EL（m）',frame.z_origin_m,v=>{frame.z_origin_m=Number(v);mark(frame);},'number'));
 const axisRows=frame.axes.map(a=>[select('方向',a.direction,[['X','X'],['Y','Y']],v=>setField(a,'direction',v)),input('原始轴名',a.label,v=>setField(a,'label',v)),input('坐标 mm（可留空由尺寸链求解）',a.value_mm,v=>setField(a,'value_mm',v,'number'),'number'),input('证据 ID',a.evidence_ids.join(','),v=>{a.evidence_ids=splitRefs(v);mark(a);}),button('删除',()=>{frame.axes=frame.axes.filter(x=>x!==a);mark();renderStage();})]);details.append(table(['方向','轴线','锚点','证据','操作'],axisRows));details.append(button('添加轴线',()=>{frame.axes.push({direction:'X',label:'新轴线',value_mm:null,evidence_ids:[]});mark();renderStage();}));
@@ -156,3 +156,32 @@ window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();
 $('#refresh-trace').onclick=refreshTrace;
 $('#task-trace').addEventListener('toggle',()=>{if($('#task-trace').open)refreshTrace();});
 loadJobs().then(()=>{const id=new URLSearchParams(location.search).get('job');if(id)chooseJob(id);}).catch(showError);
+
+function renderViewLedger() {
+    const data=draft.data,target=$('#stage-content');
+    $('#approve').disabled=true;
+    target.append(node('p','逐视图候选台账：尚未去重，数量不可作为最终总量。可编辑并保存；新的第三阶段去重尚未接入。'));
+    target.append(table(['视图','识别状态','标签数','构件段数（未去重）'],data.view_analysis.map(a=>[
+        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,a.status,a.label_count,a.member_cnt])));
+    const choices=data.views.filter(v=>v.kind!=='ISOMETRIC');
+    const panel=node('section');
+    function show(id) {
+        panel.replaceChildren();
+        const view=data.views.find(v=>v.id===id);
+        activeView=view;
+        const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
+        panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${id}.jpg`,alt:view.title,style:'max-width:100%'}));
+        panel.append(table(['规格','所属视图ID','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
+            input('规格',r.spec,v=>setField(r,'spec',v)),
+            input(titles(r.view_tags),r.view_tags.join(','),v=>{r.view_tags=splitRefs(v);mark(r);}),
+            input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
+            input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
+            input('尺寸与切分依据',r.basis,v=>setField(r,'basis',v)),
+            input('可留空',r.issue,v=>setField(r,'issue',v||null)),r.checks.join('；'),
+            button('删除',()=>{data.view_members=data.view_members.filter(x=>x!==r);mark();show(id);},'secondary')
+        ])));
+        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[id],member_cnt:1,length_mm:null,basis:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
+    }
+    target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
+    if(choices.length)show(choices[0].id);
+}

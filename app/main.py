@@ -154,6 +154,8 @@ def create_app(root=ROOT, start_workers=True):
             raise StoreError('阶段版本已改变，请刷新后再操作。')
         if draft['status'] not in ('awaiting_review','approved'):
             raise StoreError('只有等待确认的草稿可以确认。')
+        if stage==2 and draft['data'].get('recognition_mode')=='view_ledger':
+            raise HTTPException(409,'逐视图台账已生成，可修改保存；按视图标签与 member_cnt 去重的第三阶段尚未接入，暂不能生成最终数量。')
         if draft['status']!='approved':
             pending=pending_reasons(stage,draft['data'])
             if pending and not body.acknowledge_pending:
@@ -212,7 +214,8 @@ def create_app(root=ROOT, start_workers=True):
         for n in (1,2):
             try:
                 allowed.update(v['id']+'.jpg' for v in store.stage(job_id,n)['data'].get('views',[]))
-                allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[]) if v.get('localization'))
+                allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[])
+                               if v.get('localization') or store.stage(job_id,n)['data'].get('recognition_mode')=='view_ledger')
             except StoreError:
                 pass
         path=folder/'views'/filename
