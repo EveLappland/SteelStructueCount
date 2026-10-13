@@ -111,6 +111,15 @@ API 地址、Key、认证头不作为日志字段保存；已知密钥、Bearer 
 
 ## 验证
 
+PDF 渲染测试使用第二张样本图纸中人工目视核对的两个平面区域（见 `tests/fixtures/plan_02_views.json`），验证标题、轴线、拼接和说明覆盖，排除相邻视图标题与图签，并检查 300 DPI PNG 尺寸。测试不调用 API，也不代表自动视图定位已通过验收。
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_pdf_rendering.py -v
+.\.venv\Scripts\python.exe tools\render_sample_views.py
+```
+
+第二个命令将两个高清 PNG、2600 像素预览及报告写入 `tmp/pdf_render_test/`（Git 忽略）。`render_png(entry, dpi=300)` 直接从 PDF 矢量渲染，无损输出且不受预览尺寸限制；现有 AI 输入和网页预览仍使用 JPEG，新增测试不会自动提高所有 API 请求的图片尺寸。
+
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
