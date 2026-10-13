@@ -70,12 +70,13 @@ def create_app(root=ROOT, start_workers=True):
                 logger.error('job=%s stage=%s failed: %s',job_id,stage,audit.scrub(str(exc)))
                 store.fail(job_id,stage,audit.scrub(str(exc)))
             finally:
-                if stage==1:
+                if stage==2:
                     credentials.pop(job_id,None)
 
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
-        if settings and stage==1:
-            credentials[job_id]={k:v for k,v in settings.items() if k in ('base_url','api_key','model')}
+        if settings and stage in (1,2):
+            existing=credentials.get(job_id,{})
+            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model') and v}}
         if start_workers:
             threading.Thread(target=worker,args=(job_id,stage,reuse_saved),daemon=True).start()
 
@@ -161,13 +162,13 @@ def create_app(root=ROOT, start_workers=True):
         if next_stage:
             AuditLog(directory(job_id),stage).event('STAGE_APPROVED',revision=body.revision,
                 acknowledge_pending=body.acknowledge_pending,reason=body.reason or '用户确认。')
-            launch(job_id,next_stage)
+            launch(job_id,next_stage,body.settings)
         return status(job_id)
 
     @application.post('/api/jobs/{job_id}/stages/{stage}/retry')
     def retry_stage(job_id:str,stage:int,body:StageAction):
         previous=store.stage(job_id,stage)
-        resume=(stage==1 and previous['status'] in ('failed','interrupted') and body.reuse_saved)
+        resume=(stage in (1,2) and previous['status'] in ('failed','interrupted') and body.reuse_saved)
         next_stage=store.retry(job_id,stage,body.revision)
         launch(job_id,next_stage,body.settings,reuse_saved=resume)
         return status(job_id)

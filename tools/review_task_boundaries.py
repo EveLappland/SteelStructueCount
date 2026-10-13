@@ -16,11 +16,12 @@ from app.pipeline import (load_native, model_call, BoundaryResponse, boundary_re
 from verify_task import request
 
 
-def review(base,identity,view_id=None,repair_empty=False):
+def review(base,identity,view_id=None,repair_empty=False,number=2):
     root=Path(__file__).resolve().parents[1]
     load_dotenv(root/'.env')
-    stage=request(base,f'/api/jobs/{identity}/stages/1')
-    if stage['status']!='awaiting_review':raise ValueError('任务第一阶段须处于 awaiting_review。')
+    stage=request(base,f'/api/jobs/{identity}/stages/{number}')
+    if stage['status']!='awaiting_review':raise ValueError('所选阶段须处于 awaiting_review。')
+    if stage['data'].get('analysis_pending'):raise ValueError('第一阶段仅输出目录；请确认后进入第二阶段进行端部复核。')
     directory=root/'data'/'jobs'/identity
     data=stage['data']
     pages={p['id']:p for p in load_native(directory)}
@@ -28,7 +29,7 @@ def review(base,identity,view_id=None,repair_empty=False):
     evidence=evidence_index(list(pages.values()),data.get('manual_evidence',[]))
     aliases=evidence_aliases(evidence)
     base_url,key,model=_api_settings({})
-    audit=AuditLog(directory,stage=1,secrets=(key,))
+    audit=AuditLog(directory,stage=number,secrets=(key,))
     client=OpenAI(base_url=base_url,api_key=key,timeout=600,max_retries=1)
     folder=directory/'responses'/f'attempt-boundary-{uuid.uuid4().hex}'
     for view in data['views']:
@@ -77,11 +78,11 @@ def review(base,identity,view_id=None,repair_empty=False):
         data['warnings'].extend(payload['warnings'])
         if absent:data['warnings'].append('端部复核缺少观察：'+', '.join(absent))
         write_json(directory/'boundary_review_proposal.json',data)
-    result=request(base,f'/api/jobs/{identity}/stages/1',body=None)  # detect intervening changes
+    result=request(base,f'/api/jobs/{identity}/stages/{number}',body=None)  # detect intervening changes
     if result['revision']!=stage['revision']:raise ValueError('阶段版本已变化，复核提案已保存，未覆盖草稿。')
     import urllib.request
     body={'revision':stage['revision'],'data':data,'reason':'[API_BOUNDARY_REVIEW] 基于相同任务原图复核缺失端部；原响应及理由已保存。'}
-    req=urllib.request.Request(base+f'/api/jobs/{identity}/stages/1',data=json.dumps(body).encode(),
+    req=urllib.request.Request(base+f'/api/jobs/{identity}/stages/{number}',data=json.dumps(body).encode(),
                                headers={'Content-Type':'application/json'},method='PATCH')
     with urllib.request.urlopen(req,timeout=60) as response:print('saved revision',json.load(response)['revision'],flush=True)
 
@@ -92,7 +93,8 @@ if __name__=='__main__':
     parser.add_argument('--base',default='http://127.0.0.1:8120')
     parser.add_argument('--view-id')
     parser.add_argument('--repair-empty-views',action='store_true')
+    parser.add_argument('--stage',type=int,choices=(1,2),default=2,help='默认第二阶段；1 仅用于旧版已识别草稿')
     args=parser.parse_args()
     import re
     if not re.fullmatch(r'[0-9a-f]{32}',args.job_id):parser.error('job-id must be UUID hex')
-    review(args.base.rstrip('/'),args.job_id,args.view_id,args.repair_empty_views)
+    review(args.base.rstrip('/'),args.job_id,args.view_id,args.repair_empty_views,args.stage)

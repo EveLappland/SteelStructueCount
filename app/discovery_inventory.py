@@ -53,7 +53,7 @@ def build_inventory(data,pages):
                 'title':title['title'],'kind':title['kind'],'elevation_m':title['elevation_m'],
                 'elevation_basis':title['elevation_basis'],'fixed_label':title['alignment'],
                 'evidence_ids':[title['evidence_id']],'file':page['file'],'page':page['page'],
-                'region_identified':matched is not None})
+                'region_identified':matched is not None and matched.get('region_confirmed',True)})
     for view in views:
         if view['id'] in covered:continue
         page=page_by_id.get(view['page_id'],{})

@@ -1,4 +1,4 @@
-"""Stage orchestration. Only discovery uses a model; lengths and matching are code."""
+"""Native catalog first; model interpretation after approval; deterministic geometry."""
 import json
 import re
 import zipfile
@@ -72,7 +72,7 @@ def request_options(model):
 def model_schema(contract):
     schema=contract.model_json_schema()
     # Do not ask the model to generate identities owned by the application.
-    for name,fields in [('View',('id','page_id')),('Observation',('id','view_id')),('Axis',('aliases',))]:
+    for name,fields in [('View',('id','page_id','region_confirmed')),('Observation',('id','view_id')),('Axis',('aliases',))]:
         definition=schema.get('$defs',{}).get(name)
         if definition:
             for field in fields:definition.get('properties',{}).pop(field,None)
@@ -178,7 +178,8 @@ def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
 def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None):
     if contract in (ViewResponse,AnalysisResponse):
         guidance=(Path(__file__).parent/'prompts'/'stage_one.md').read_text(encoding='utf-8')
-        prompt=guidance+'\n\n'+prompt
+        if not prompt.startswith(guidance+'\n\n'):
+            prompt=guidance+'\n\n'+prompt
     schema = json.dumps(model_schema(contract), ensure_ascii=False)
     options={**request_options(model),**(options_override or {})}
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
@@ -354,20 +355,48 @@ def merge_frame(frame, incoming, warnings, conflicted):
             frame['levels'].append(level)
 
 
-def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
+def catalog_only(directory,emit,audit):
+    """Stage 1 ends after native extraction; no API or member interpretation."""
+    entries,pages=extract(directory,emit,audit)
+    views=[]
+    warnings=[]
+    for page in pages:
+        for index,title in enumerate(page['titles'],1):
+            views.append(View(id=f"{page['id']}-view{index:02d}",page_id=page['id'],
+                title=title['title'],kind=title['kind'],bbox=[0,0,1,1],title_bbox=title['title_bbox'],
+                elevation_m=title['elevation_m'],elevation_basis=title['elevation_basis'],
+                fixed_label=title['alignment'],fixed_axis='Z' if title['kind']=='PLAN' else None,
+                visible_axes=['X','Y'] if title['kind']=='PLAN' else [],
+                evidence_ids=[title['evidence_id']],region_confirmed=False).model_dump())
+        if not page['titles']:warnings.append(f"{page['file']} 未提取到独立视图标题，需补充。")
+    result=StageOne(views=views,analysis_pending=True,warnings=warnings).model_dump()
+    result=validate_draft(directory,1,result)
+    inventory=result['discovery_inventory']
+    audit.event('STAGE_ONE_INVENTORY',profile_count=inventory['profile_count'],view_counts=inventory['view_counts'],
+                reason='第一阶段仅提取原生文字和矢量并生成目录，不调用 AI，不识别构件首尾。')
+    emit(f"目录已生成：{inventory['profile_count']} 种钢材规格，{inventory['view_counts']['PLAN']} 个平面，"
+         f"{inventory['view_counts']['ELEVATION']} 个立面，{inventory['view_counts']['ISOMETRIC']} 个概览。")
+    return result
+
+
+def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=None):
     base_url,key,model=_api_settings(settings)
     if urlparse(base_url).hostname=='api.deepseek.com' and model=='deepseek-v4-pro':
         raise ValueError('图纸识别请使用 DeepSeek 官方视觉模型 deepseek-flash；deepseek-v4-pro 不在官方视觉支持列表。')
-    entries,pages=extract(directory,emit,audit)
+    if seed is None:
+        entries,pages=extract(directory,emit,audit)
+    else:
+        entries=json.loads((directory/'pdf_manifest.json').read_text(encoding='utf-8'))
+        pages=load_native(directory)
     client=OpenAI(base_url=base_url,api_key=key,timeout=600,max_retries=1)
-    if audit is None:audit=AuditLog(directory,stage=1,secrets=(key,))
+    if audit is None:audit=AuditLog(directory,stage=2,secrets=(key,))
     call=partial(model_call,reuse_saved=reuse_saved,emit=emit,audit=audit)
-    native_evidence=evidence_index(pages)
+    native_evidence=evidence_index(pages,(seed or {}).get('manual_evidence',[]))
     aliases=evidence_aliases(native_evidence)
     views,observations,warnings=[],[],[]
     conflicted_axes=set()
     response_folder=directory/'responses'/f'attempt-{uuid.uuid4().hex}'
-    frame=CoordinateFrame().model_dump()
+    frame=CoordinateFrame.model_validate((seed or {}).get('frame',{})).model_dump()
     # The lowest evidenced EL is a project-relative origin, not a fabricated member endpoint.
     elevations=[]
     for page in pages:
@@ -380,7 +409,11 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
         frame['levels']=[{'elevation_m':el,'basis':basis,'evidence_ids':[ref]} for el,basis,ref in elevations]
     for entry,page in zip(entries,pages):
         emit(f"发现 {entry['file']} 的独立平面、立面和概览视图。")
-        payload=call(client,model,
+        approved_views=[v for v in (seed or {}).get('views',[]) if v['page_id']==page['id']]
+        if approved_views and all(v.get('region_confirmed',True) for v in approved_views):
+            payload={'views':approved_views}
+        else:
+            payload=call(client,model,
             'Discover ALL independently titled full framing views. Do not include base plate details, sections, '
             'page border grids, title blocks or key plans. ISOMETRIC is coverage evidence only. '
             'Use page-normalized bounding boxes and original title evidence IDs. Determine visible_axes and '
@@ -392,12 +425,27 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
             f"Page id: {entry['id']}\nNative title candidates: {json.dumps(page['titles'],ensure_ascii=False)}\n"
             f"Existing project frame: {json.dumps(frame,ensure_ascii=False)}",
             entry,response_folder/f"{entry['id']}_views.json",ViewResponse)
+        if seed is not None:
+            reconciled=[]
+            for approved in approved_views:
+                proposed=next((v for v in payload['views'] if v['title']==approved['title'] or
+                    set(v['evidence_ids'])&set(approved['evidence_ids'])),None)
+                if approved.get('region_confirmed',True):proposed=approved
+                if proposed is None:
+                    warnings.append(f"第二阶段未定位已确认目录视图：{approved['title']}，保留待确认。")
+                    proposed=approved
+                reconciled.append({**proposed,'id':approved['id'],'page_id':approved['page_id'],
+                                   'title':approved['title'],'kind':approved['kind'],
+                                   'elevation_m':approved.get('elevation_m') if approved.get('elevation_m') is not None else proposed.get('elevation_m'),
+                                   'elevation_basis':approved.get('elevation_basis') or proposed.get('elevation_basis',''),
+                                   'fixed_label':approved.get('fixed_label') or proposed.get('fixed_label')})
+            payload={'views':reconciled}
         missing=repair_model_evidence(payload,native_evidence,aliases,audit)
         if missing:
             warnings.append(f"{entry['file']} 的视图引用无法确认：{', '.join(missing)}；请核对视图。")
         present=set()
         for index,view in enumerate(payload['views'],1):
-            view['id']=f"{entry['id']}-view{index:02d}"
+            if seed is None:view['id']=f"{entry['id']}-view{index:02d}"
             view['page_id']=entry['id']
             present.add(view['title'])
             views.append(view)
@@ -503,6 +551,7 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None):
     if not observations:
         warnings.append('尚无候选构件，不能形成数量结果；请补充或重试。')
     result=StageOne(views=views,frame=frame,observations=observations,
+                    manual_evidence=(seed or {}).get('manual_evidence',[]),analysis_pending=False,
                     warnings=list(dict.fromkeys(warnings))).model_dump()
     inventory=build_inventory(result,pages)
     audit.event('STAGE_ONE_INVENTORY',profile_count=inventory['profile_count'],profiles=[p['profile'] for p in inventory['profiles']],
@@ -519,7 +568,7 @@ def render_draft(directory, data):
 
 def pending_reasons(stage,data):
     if stage==1:
-        return data.get('warnings',[])+(['没有候选构件。'] if not data.get('observations') else [])
+        return data.get('warnings',[])+(['没有候选构件。'] if not data.get('analysis_pending') and not data.get('observations') else [])
     if stage==2:
         return data.get('warnings',[])+data.get('frame_issues',[])+[c['observation_id'] for c in data['candidates'] if not c['confirmed']]
     return [e['observation_id'] for e in data['exceptions']]
@@ -597,9 +646,11 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
     audit.event('STAGE_STARTED',revision=store.stage(job_id,min(stage,3))['revision'],reuse_saved=reuse_saved)
     emit=lambda message:store.progress(job_id,message)
     if stage==1:
-        result=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit)
+        result=catalog_only(directory,emit,audit)
     elif stage==2:
         one=store.stage(job_id,1)['data']
+        if one.get('analysis_pending'):
+            one=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=one)
         render_draft(directory,one)
         result=build_lengths(one,stage_evidence(directory,one))
         for candidate in result['candidates']:

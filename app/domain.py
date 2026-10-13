@@ -69,6 +69,7 @@ class View(Contract):
     mirrored: bool = False
     axis_marks: list[AxisMark] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+    region_confirmed: bool = True
 
     @model_validator(mode='after')
     def valid_box(self):
@@ -170,6 +171,7 @@ class StageOne(Contract):
     manual_evidence: list[Evidence] = Field(default_factory=list)
     profile_catalog: list[str] = Field(default_factory=list)
     discovery_inventory: dict = Field(default_factory=dict)
+    analysis_pending: bool = False
     warnings: list[str] = Field(default_factory=list)
     notes: str = ''
 

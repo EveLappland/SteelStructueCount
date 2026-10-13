@@ -118,8 +118,51 @@ class ApiWorkflowTest(unittest.TestCase):
             view_id='plan' if '-view01' in str(response_path) else 'elevation-A'
             selected=[o for o in data['observations'] if o['view_id']==view_id]
             return {'frame':data['frame'],'observations':selected,'axis_marks':[],'warnings':[]}
-        with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=mock_call):
+        # Legacy drafts remain valid for geometry/version/export regressions.
+        self.mock_call=mock_call
+        self.legacy_draft=data
+        with patch('app.pipeline.catalog_only',side_effect=lambda directory,emit,audit:
+                   self._legacy_catalog(directory,data,emit,audit)):
             self.app.state.worker(self.job_id,1)
+
+    def _legacy_catalog(self,directory,data,emit,audit):
+        from app.pipeline import extract
+        extract(directory,emit,audit)
+        return validate_draft(directory,1,data)
+
+    def test_native_catalog_pauses_without_api_then_analyzes_on_approval(self):
+        identity=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))]).json()['id']
+        base=f'/api/jobs/{identity}'
+        with patch('app.pipeline.OpenAI') as constructor,patch('app.pipeline.model_call') as model:
+            self.app.state.worker(identity,1)
+            constructor.assert_not_called();model.assert_not_called()
+        stage=self.client.get(base+'/stages/1').json()
+        self.assertTrue(stage['data']['analysis_pending'])
+        self.assertEqual(stage['data']['observations'],[])
+        self.assertEqual(stage['data']['discovery_inventory']['profile_count'],1)
+        self.assertEqual(self.client.get(base+'/stages/2').status_code,404)
+        self.assertEqual(self.client.get(base).json()['state'],'awaiting_review')
+        response=self.client.post(base+'/stages/1/approve',json={'revision':1,
+            'settings':{'base_url':'https://example.test','api_key':'second-stage-secret','model':'test'}})
+        self.assertEqual(response.status_code,200,response.text)
+        self.legacy_draft['views'][1]['title']='ELEVATION ON ALIGNMENT A'
+        with patch('app.pipeline.OpenAI') as constructor,patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
+            self.app.state.worker(identity,2)
+            self.assertTrue(constructor.called);self.assertTrue(model.called)
+            self.assertEqual(constructor.call_args.kwargs['api_key'],'second-stage-secret')
+        stage_two=self.client.get(base+'/stages/2').json()
+        self.assertEqual(stage_two['status'],'awaiting_review')
+        self.assertFalse(stage_two['data']['analysis_pending'])
+        self.assertEqual(len(stage_two['data']['observations']),2)
+        self.assertTrue(all(c['confirmed'] for c in stage_two['data']['candidates']))
+        for number in (2,3):
+            current=self.client.get(base+f'/stages/{number}').json()
+            response=self.client.post(base+f'/stages/{number}/approve',json={'revision':current['revision'],'acknowledge_pending':True})
+            self.assertEqual(response.status_code,200,response.text)
+            self.app.state.worker(identity,number+1)
+        self.assertEqual(self.client.get(base).json()['state'],'completed')
+        self.assertEqual(self.client.get(base).json()['total'],1)
+        self.assertEqual(self.client.get(base+'/download').status_code,200)
 
     def tearDown(self):
         self.client.__exit__(None,None,None)
@@ -238,7 +281,8 @@ class NativePdfTest(unittest.TestCase):
             self.assertTrue(result['views'])
             actual_prompt=client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['text']
             self.assertIn('HEA180 /EPB',actual_prompt)
-            self.assertIn('第一阶段必须先建立钢材规格目录和视图目录',actual_prompt)
+            self.assertIn('第一阶段已由程序提取原生文字',actual_prompt)
+            self.assertEqual(actual_prompt.count('第一阶段已由程序提取原生文字'),1)
             self.assertTrue(output.with_suffix('.truncated.json').exists())
             self.assertEqual(client.chat.completions.create.call_count,2)
             self.assertEqual(client.chat.completions.create.call_args.kwargs['extra_body']['thinking']['type'],'disabled')
