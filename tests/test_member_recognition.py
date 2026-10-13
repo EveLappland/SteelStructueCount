@@ -30,6 +30,19 @@ class MemberRecognitionTests(unittest.TestCase):
         self.assertEqual(bundle['current_view_id'],'plan1')
         self.assertIn('OF SPLICE',recognition_prompt(bundle))
         self.assertIn('member_cnt',recognition_prompt(bundle))
+        self.assertIn('主要任务是看图片',recognition_prompt(bundle))
+        self.assertIn('全图轴线总跨尺寸',recognition_prompt(bundle))
+        self.assertIn('sqrt(3000²+4000²)=5000mm',recognition_prompt(bundle))
+        self.assertIn('不能根据规格名字判断',recognition_prompt(bundle))
+
+    def test_vectors_remain_small_auxiliary_context(self):
+        vectors=[{'id':f'v{i}','bbox':[.1,.1,.2,.2],'points':[[.1,.1],[.2,.2]],'style':{}}
+                 for i in range(200)]
+        page={'id':'p','file':'drawing.pdf','page':1,'width_pt':800,'height_pt':600,'texts':[],'vectors':vectors}
+        context=make_input(page,self.view,self.one)['native_evidence']
+        self.assertEqual(context['vector_total'],200)
+        self.assertEqual(len(context['vectors']),120)
+        self.assertTrue(context['vector_context_truncated'])
 
     def test_cross_view_records_remain_independent_and_tags_sorted(self):
         a=validate_rows([self.row],self.view,self.one)[0]
@@ -105,6 +118,7 @@ class MemberRecognitionTests(unittest.TestCase):
                 result=model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse)
             self.assertEqual(result['members'][0]['member_cnt'],2)
             self.assertEqual(client.chat.completions.create.call_count,2)
+            self.assertEqual(client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['type'],'image_url')
             self.assertTrue(target.with_suffix('.invalid.json').is_file())
             client.chat.completions.create.side_effect=[response('{}'),response('{}')]
             with patch('app.pipeline.render_data_uri',return_value='data:image/png;base64,test'),self.assertRaises(ValidationError):

@@ -29,7 +29,8 @@ def view_tag(view):
 
 
 def make_input(page, view, stage_one):
-    context = view_context(page, view['bbox'])
+    # Keep geometry auxiliary: a large path dump can overwhelm the visual task.
+    context = view_context(page, view['bbox'], max_vectors=120)
     catalog = stage_one.get('discovery_inventory', {}).get('profiles', [])
     labels = [e for p in catalog for e in p.get('evidence', [])
               if e.get('page_id') == page['id'] and inside(e, view['bbox'])]
@@ -41,6 +42,7 @@ def make_input(page, view, stage_one):
                  'width_pt': page['width_pt'], 'height_pt': page['height_pt']},
         'crop_bbox_page_normalized': view['bbox'],
         'coordinate_usage': '文字和矢量位置为原PDF整页归一化坐标，仅用于与裁切图片关联。',
+        'recognition_priority':'高清图片及识别步骤优先；原生文字用于读数，少量矢量仅辅助轮廓，不要求坐标求解。',
         'profile_catalog': stage_one.get('profile_catalog', []),
         'view_catalog': [{**{k: v.get(k) for k in ('id', 'title', 'kind', 'fixed_label',
                                                'elevation_m', 'elevation_basis')},'tag':view_tag(v)}
@@ -51,7 +53,9 @@ def make_input(page, view, stage_one):
 
 def recognition_prompt(bundle):
     guidance = (Path(__file__).parent/'prompts'/'stage_two_members.md').read_text(encoding='utf-8')
-    return guidance + '\n输入包：\n' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':'))
+    # Avoid repeating all native labels with file/page/catalog metadata in the prompt.
+    compact={**bundle,'profile_labels':[{'text':e['text'],'bbox':e['bbox']} for e in bundle['profile_labels']]}
+    return guidance + '\n输入包：\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
 
 
 def validate_rows(rows, view, stage_one):

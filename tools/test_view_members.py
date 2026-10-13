@@ -65,9 +65,14 @@ def main():
     report={'job_id':args.job_id,'stage_one_revision':record[1],'view_id':view['id'],'title':view['title'],
             'members':rows,'row_count':len(rows),'member_cnt':sum(r['member_cnt'] for r in rows),
             'label_count':len(bundle['profile_labels']),'model':model,'deduplicated':False,
+            'unknown_length_rows':sum(r['length_mm'] is None for r in rows),
+            'issue_rows':sum(bool(r['issue']) for r in rows),
             'note':'结构校验与API连通测试，尚未人工确认识别准确性；不修改原任务。'}
     write_json(output/'report.json',report)
-    print(json.dumps({k:report[k] for k in ('title','row_count','member_cnt','label_count','model')},ensure_ascii=False))
+    audit.event('VIEW_MEMBER_TEST_COMPLETED',row_count=len(rows),member_cnt=report['member_cnt'],
+                label_count=report['label_count'],unknown_length_rows=report['unknown_length_rows'],
+                issue_rows=report['issue_rows'],deduplicated=False)
+    print(json.dumps({k:report[k] for k in ('title','row_count','member_cnt','label_count','unknown_length_rows','issue_rows','model')},ensure_ascii=False))
     print(f'结果目录：{output}')
 
 
