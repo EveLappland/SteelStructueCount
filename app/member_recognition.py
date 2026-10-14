@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import Field, StrictInt
 from .domain import Contract
 from .geometry import section
-from .axis_catalog import build_axis_catalog
+from .axis_catalog import build_axis_catalog,axis_name
 from .native_pdf import view_context
 
 
@@ -52,19 +52,28 @@ def make_input(page, view, stage_one):
     """Pair the confirmed image with its catalogs and crop-scoped native evidence."""
     context_views=[view if v['id']==view['id'] else v for v in stage_one['views']]
     axes=stage_one.get('axis_catalog') or build_axis_catalog([page],context_views)
+    view_catalog=[{'tag':view_tag(v),'kind':v['kind'],
+                   'alignment':v.get('fixed_label') if v['kind']=='ELEVATION' else None,
+                   'axes':axes['per_view'].get(v['id'],[]),'uploaded':True}
+                  for v in context_views if v['kind']!='ISOMETRIC']
+    known_tags=set().union(*(tag_aliases(v) for v in context_views if v['kind']!='ISOMETRIC'))
+    for plane in axes['axes']:
+        if plane['name'] in known_tags:continue
+        kind=plane.get('kind') or ('PLAN' if plane['name'].upper().startswith('EL.') else 'ELEVATION')
+        view_catalog.append({'tag':plane['name'],'kind':kind,
+                             'alignment':plane['name'] if kind=='ELEVATION' else None,
+                             'axes':[],'uploaded':bool(plane.get('uploaded_view_ids'))})
     return {
         'current_view_tag':view_tag(view),
         'profile_catalog':list(stage_one.get('profile_catalog',[])),
         'native_evidence':{'page_id':page['id'],'crop_bbox':list(view['bbox']),
                            'coordinate_system':'normalized PDF page coordinates, not real-world millimetres',
                            **view_context(page,view['bbox'])},
-        'axis_catalog':{'axes':[{'name':a['name']} for a in axes['axes']],
+        'axis_catalog':{'axes':[{'name':a['name'],'kind':a.get('kind','ELEVATION')} for a in axes['axes']],
                         'axis_count':axes['axis_count'],
+                        'definition':'轴线或面名称：Alignment立面或EL标高平面；与当前图纸绑定，不代表均已上传独立视图',
                         'current_axes':axes['per_view'].get(view['id'],[])},
-        'view_catalog':[{'tag':view_tag(v),'kind':v['kind'],
-                         'alignment':v.get('fixed_label') if v['kind']=='ELEVATION' else None,
-                         'axes':axes['per_view'].get(v['id'],[])}
-                        for v in context_views if v['kind']!='ISOMETRIC'],
+        'view_catalog':view_catalog,
     }
 
 
@@ -104,8 +113,8 @@ def validate_rows(rows, view, stage_one):
         axes=stage_one.get('axis_catalog',{})
         current_axes=axes.get('per_view',{}).get(view['id'],[])
         axis_names={a['name'] for a in axes.get('axes',[])}
-        if any(tag in axis_names and tag not in current_axes for tag in row['view_tags']):
-            issues.append('引用的轴面未绑定到第一阶段的当前视图')
+        if any((axis_name(tag) or tag) in axis_names and (axis_name(tag) or tag) not in current_axes for tag in row['view_tags']):
+            issues.append('引用的轴线或面名称未绑定到第一阶段的当前视图')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')
         if not row['location']: issues.append('缺少构件位置说明，需补充核对')

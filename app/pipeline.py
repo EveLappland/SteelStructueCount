@@ -341,7 +341,7 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
         if stage==2 and draft['recognition_mode']=='view_ledger':
             if draft.get('workflow')=='image_first' and stage_one is not None:
                 if draft['views']!=stage_one['views']:raise ValueError('第二阶段不能更改已确认的视图目录；请返回第一阶段修改。')
-                draft['axis_catalog']=stage_one['axis_catalog']
+                draft['axis_catalog']=build_axis_catalog(pages,stage_one['views'])
                 draft['profile_catalog']=stage_one['profile_catalog']
             else:draft['axis_catalog']=build_axis_catalog(pages,draft['views'])
             return validate_ledger(draft)
@@ -365,6 +365,9 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
         if stage==1:
             if one.get('workflow')=='image_first':
                 one['axis_catalog']=build_axis_catalog(pages,one['views'])
+                for view in one['views']:
+                    if not view.get('axes_reviewed'):
+                        view['axis_labels']=one['axis_catalog']['per_view'].get(view['id'],[])
                 one['warnings']=[w for w in one['warnings'] if '区域待确认：' not in w]
                 one['warnings'].extend(f"{v['title']} 区域待确认：请核对裁切后确认。" for v in one['views'] if not v['region_confirmed'])
             return one

@@ -77,7 +77,7 @@ class View(Contract):
     image_file: str = ''
     image_bbox: list[float] = Field(default_factory=list)
     detail_files: list[str] = Field(default_factory=list)
-    axis_labels: list[str] = Field(default_factory=list)
+    axis_labels: list[str] = Field(default_factory=list,description='当前视图的轴线或面名称：Alignment立面与EL标高平面')
     axes_reviewed: bool = False
 
     @model_validator(mode='after')

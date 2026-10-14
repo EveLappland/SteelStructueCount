@@ -164,8 +164,8 @@ function renderViewLedger() {
     const overview=node('section'),currentSummary=node('section');
     const axisCatalog=data.axis_catalog||{axes:[],per_view:{},axis_count:0,plan_count:0,elevation_view_count:0};
     target.append(node('h3','第二阶段图纸目录统计'),
-        node('p',`钢材种类：${data.profile_catalog.length} 种（图纸目录） · 轴面数：${axisCatalog.axis_count} · 平面数：${axisCatalog.plan_count} · 已上传立面视图数：${axisCatalog.elevation_view_count}`),
-        node('p',`轴面名称：${axisCatalog.axes.map(a=>a.name).join('、')||'尚未提取'}`));
+        node('p',`钢材种类：${data.profile_catalog.length} 种（图纸目录） · 轴线或面名称数：${axisCatalog.axis_count} · 已上传平面视图数：${axisCatalog.plan_count} · 已上传立面视图数：${axisCatalog.elevation_view_count}`),
+        node('p',`轴线或面名称：${axisCatalog.axes.map(a=>a.name).join('、')||'尚未提取'}`));
     function summarySection(container,rows,label) {
         const stats=LedgerTools.summarize(rows);container.replaceChildren(node('h3',label),
             node('p',`钢材种类：${stats.profileCount} 种 · ${stats.quantity} 个构件段 · ${stats.unknownQuantity} 个缺少长度（未去重，待核对）`),
@@ -188,12 +188,12 @@ function renderViewLedger() {
         activeView=view;
         updateSummaries();panel.append(currentSummary);
         const axes=axisCatalog.per_view[id]||[];
-        panel.append(node('p',`当前视图轴面数：${axes.length}；${axes.join('、')||'尚未提取'}`));
+        panel.append(node('p',`当前视图轴线或面名称数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','构件位置','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
-            LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:'ELEVATION',title:a.name,fixed_label:a.name}))],()=>{mark(r);refreshJson();}),
+            LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:a.kind||'ELEVATION',title:a.name,fixed_label:a.kind==='PLAN'?null:a.name}))],()=>{mark(r);refreshJson();}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
             input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
             input('用平面或立面轴线说明位置',r.location||'',v=>setField(r,'location',v)),
@@ -211,9 +211,9 @@ function renderViewLedger() {
 
 function renderPreparedCatalog() {
     const data=draft.data,target=$('#stage-content'),panel=node('section');
-    target.append(node('p','第一阶段请核对每个视图的高清裁切、标题、所在轴面和图示轴线。第二阶段只发送这里确认的图片、精简名称目录和你的提示词。'));
+    target.append(node('p','第一阶段请核对高清裁切、标题及轴线或面名称。名称表示Alignment立面或EL标高平面，图中的线是这些面在当前视图中的示意。第二阶段使用确认图片、目录、提示词和当前视图的辅助证据。'));
     const catalog=data.axis_catalog||{axis_count:0,per_view:{}};
-    target.append(node('p',`共 ${data.views.length} 个视图，${catalog.axis_count} 个轴面`));
+    target.append(node('p',`共 ${data.views.length} 个视图，${catalog.axis_count} 个轴线或面名称`));
     function show(id) {
         const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren();
         const image=view.image_file||view.id+'.jpg';
@@ -221,10 +221,11 @@ function renderPreparedCatalog() {
                      node('a','打开300DPI原图',{href:`/api/jobs/${jobId}/views/${image}`,target:'_blank'}));
         if(view.detail_files?.length){const details=node('details');details.append(node('summary',`同视图局部放大图（${view.detail_files.length} 张，识别时与全图一起发送）`));for(const file of view.detail_files)details.append(node('img','',{src:`/api/jobs/${jobId}/views/${file}`,alt:'同一视图局部',style:'max-width:100%'}));panel.append(details);}
         panel.append(input('原始视图标题',view.title,value=>setField(view,'title',value)));
-        if(view.kind==='ELEVATION')panel.append(input('此立面所在轴面',view.fixed_label,value=>setField(view,'fixed_label',value)));
-        panel.append(input('此视图中的轴线名称（逗号分隔）',(view.axis_labels||[]).join(','),value=>{
+        if(view.kind==='ELEVATION')panel.append(input('此立面的Alignment名称',view.fixed_label,value=>setField(view,'fixed_label',value)));
+        panel.append(input('轴线或面名称',(view.axis_labels||[]).join(','),value=>{
             view.axis_labels=value.split(/[,，;；\n]+/).map(t=>t.trim()).filter(Boolean);view.axes_reviewed=true;mark(view);
         }));
+        panel.append(node('small','多个名称用逗号分隔；包括Alignment立面名称与EL标高平面名称。目录中出现名称，不代表已上传对应面的独立图纸。'));
         panel.append(input('裁切区域 [左,上,右,下]，整页归一化',JSON.stringify(view.bbox),value=>{
             try{const box=JSON.parse(value);if(box.length!==4)throw Error('需要四个坐标');view.bbox=box;view.region_confirmed=false;mark(view);}catch{}
         }));

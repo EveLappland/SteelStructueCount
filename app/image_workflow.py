@@ -58,11 +58,11 @@ def prepare_catalog(directory,settings,emit,audit,*,reuse_saved=False):
     seed=catalog_only(directory,emit,audit)
     # Archived coordinate drafts remain supported for legacy imports/tests.
     if seed.get('observations'):return seed
-    emit('第一阶段：定位独立视图，准备高清裁切和逐视图轴线目录。')
+    emit('第一阶段：定位独立视图，准备高清裁切和逐视图轴线或面名称目录。')
     result=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=seed,regions_only=True)
     freeze_images(directory,result)
     audit.event('VIEW_CATALOG_PREPARED',view_count=len(result['views']),axis_count=result['axis_catalog']['axis_count'],
-                reason='第一阶段只定位视图和轴线，不调用构件识别；确认后冻结图片与目录供第二阶段使用。')
+                reason='第一阶段定位视图及Alignment/标高平面名称，不调用构件识别；确认后图片与目录供第二阶段使用。')
     return result
 
 
@@ -71,6 +71,9 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     base,key,model=_api_settings(settings)
     client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
     pages={p['id']:p for p in load_native(directory)}
+    # Derived catalogs use the current reference-plane definition. Explicitly
+    # reviewed per-view names remain authoritative through build_axis_catalog.
+    one={**one,'axis_catalog':build_axis_catalog(list(pages.values()),one['views'])}
     entries={e['id']:e for e in json.loads((directory/'pdf_manifest.json').read_text(encoding='utf-8'))}
     folder=directory/'responses'/f'attempt-images-{uuid.uuid4().hex}'
     result=StageTwo(**{**one,'analysis_pending':False},recognition_mode='view_ledger').model_dump()

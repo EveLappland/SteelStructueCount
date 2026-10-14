@@ -130,6 +130,10 @@ def create_app(root=ROOT, start_workers=True):
             result['data']['profile_catalog']=[p['profile'] for p in inventory['profiles']]
             if stage==2 or result['data'].get('workflow')=='image_first':
                 result['data']['axis_catalog']=build_axis_catalog(load_native(directory(job_id)),result['data']['views'])
+                if stage==1:
+                    for view in result['data']['views']:
+                        if not view.get('axes_reviewed'):
+                            view['axis_labels']=result['data']['axis_catalog']['per_view'].get(view['id'],[])
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
         return result
 
