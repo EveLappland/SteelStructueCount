@@ -31,9 +31,13 @@ def main():
         if not data:parser.error('提案未通过数量守恒等本地检查，不能验收')
     if data.get('source_hash')!=source_hash(json.loads(two[0])):parser.error('第三阶段或提案不是基于当前第二阶段，拒绝错版本验收')
     result=score(reference,data['members'])
+    with sqlite3.connect((ROOT/'data/jobs_v2.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
+        unchanged=(two==db.execute('SELECT data FROM stages WHERE job_id=? AND stage=2',(args.job_id,)).fetchone()
+            and three==db.execute('SELECT revision,status,data FROM stages WHERE job_id=? AND stage=3',(args.job_id,)).fetchone())
+    if not unchanged:result['passed_90_percent']=False
     result.update(job_id=args.job_id,stage_three_revision=three[0],stage_three_status=three[1],
                   result_kind=kind,reference_sha256=hashlib.sha256(args.reference.read_bytes()).hexdigest(),
-                  reference_reviewer=reference.get('reviewer'),source_unchanged=True,api_calls=0)
+                  reference_reviewer=reference.get('reviewer'),source_unchanged=unchanged,api_calls=0)
     output=ROOT/'tmp/acceptance'/args.job_id/('score-'+uuid.uuid4().hex[:8]);output.mkdir(parents=True)
     write_json(output/'comparison.json',result)
     def pct(value):return f'{value:.2%}'
