@@ -202,7 +202,7 @@ function renderViewLedger() {
         ])));
         const legacy=data.view_members.filter(r=>r.source_view===id&&(r.legacy_basis||r.basis));
         if(legacy.length){const history=node('details');history.append(node('summary','历史台账依据（保留原文）'),table(['规格','原有依据'],legacy.map(r=>[r.spec,r.legacy_basis||r.basis])));panel.append(history);}
-        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title],member_cnt:1,length_mm:null,location:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
+        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[LedgerTools.tagOf(view)],member_cnt:1,length_mm:null,location:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
     }
     target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
     if(choices.length)show(choices[0].id);

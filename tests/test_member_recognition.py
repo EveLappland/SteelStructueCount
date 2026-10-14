@@ -28,7 +28,7 @@ class MemberRecognitionTests(unittest.TestCase):
               'texts':[{'id':'t1','text':'HEA240','bbox':[.1,.1,.2,.2]},
                        {'id':'t2','text':'HEA300','bbox':[.6,.1,.7,.2]}], 'vectors':[]}
         bundle=make_input(page,self.view,self.one)
-        self.assertEqual(bundle['current_view_tag'],self.view['title'])
+        self.assertEqual(bundle['current_view_tag'],'EL.1.000(TOS)')
         self.assertEqual(bundle['profile_catalog'],self.one['profile_catalog'])
         self.assertEqual([t['id'] for t in bundle['native_evidence']['texts']],['t1'])
         self.assertEqual(bundle['native_evidence']['crop_bbox'],self.view['bbox'])
@@ -56,10 +56,10 @@ class MemberRecognitionTests(unittest.TestCase):
     def test_at_suffix_tags_follow_catalog_identity(self):
         row = validate_rows([{**self.row, 'view_tags':['EL.1.000(TOS)','elA']}], self.view, self.one)[0]
         self.assertEqual(row['checks'], [])
-        self.assertIn(self.view['title'], row['view_tags'])
+        self.assertIn('EL.1.000(TOS)', row['view_tags'])
         tags = allowed_model_tags({'view_catalog':[{'tag':self.view['title'],'kind':'PLAN'}],
                                    'axis_catalog':{'current_axes':['GRID-Q/6']}})
-        self.assertEqual(set(tags), {self.view['title'], 'EL.1.000(TOS)', 'GRID-Q/6'})
+        self.assertEqual(set(tags), {'EL.1.000(TOS)', 'GRID-Q/6'})
 
     def test_vector_context_reports_truncation_without_losing_total(self):
         vectors=[{'id':f'v{i}','bbox':[.1,.1,.2,.2],
@@ -139,15 +139,47 @@ class MemberRecognitionTests(unittest.TestCase):
         raw={**self.row,'spec':'HEA260','member_cnt':1,'view_tags':[plan['title'],elevation['fixed_label']],
              'location':'最下面的梁位于1轴线'}
         result=validate_rows([raw],plan,one)[0]
-        self.assertEqual(result['view_tags'],['302003-PR001I/1','PLAN AT EL.107.500(TOS)'])
+        self.assertEqual(result['view_tags'],['302003-PR001I/1','EL.107.500(TOS)'])
         self.assertEqual(result['source_view'],'plan1')
         self.assertEqual(result['checks'],[])
         legacy=validate_rows([{**raw,'view_tags':['plan1','el1']}],plan,one)[0]
         self.assertEqual(legacy['view_tags'],result['view_tags'])
         page={'id':'p','file':'drawing.pdf','page':1,'width_pt':800,'height_pt':600,'texts':[],'vectors':[]}
         bundle=make_input(page,plan,one)
-        self.assertEqual(bundle['current_view_tag'],plan['title'])
+        self.assertEqual(bundle['current_view_tag'],'EL.107.500(TOS)')
         self.assertEqual(bundle['view_catalog'][1]['tag'],'302003-PR001I/1')
+
+    def test_response_normalizes_titles_and_deduplicates_only_tags(self):
+        from app.pipeline import parse_model_content
+        from unittest.mock import Mock
+        import json
+        audit=Mock()
+        tags=[' PLAN AT EL.107.500(TOS) ','EL.107.500(TOS)',
+              'ELEVATION ON ALIGNMENT PROJECT-Q/A','PROJECT-Q/A',
+              'plan at EL.107.500(BOB)']
+        raw={**self.row,'view_tags':tags}
+        result=parse_model_content(json.dumps({'members':[raw,raw]}),MemberResponse,{'id':'v'},audit)
+        self.assertEqual(len(result['members']),2)
+        self.assertEqual(result['members'][0]['member_cnt'],2)
+        self.assertEqual(result['members'][0]['view_tags'],['EL.107.500(BOB)','EL.107.500(TOS)','PROJECT-Q/A'])
+        self.assertEqual(tags[0],' PLAN AT EL.107.500(TOS) ')
+        self.assertTrue(any(call.args[0]=='MODEL_VIEW_TAGS_NORMALIZED' for call in audit.event.call_args_list))
+        again=MemberResponse.model_validate(result).model_dump()
+        self.assertEqual(again,result)
+
+    def test_title_aliases_on_edits_stay_canonical_and_unknown_names_stay_pending(self):
+        raw={**self.row,'view_tags':[self.view['title'],'EL.1.000(TOS)',
+                                   'ELEVATION ON ALIGNMENT UNKNOWN/Z']}
+        row=validate_rows([raw],self.view,self.one)[0]
+        self.assertEqual(row['view_tags'],['EL.1.000(TOS)','UNKNOWN/Z'])
+        self.assertTrue(any('目录外' in check for check in row['checks']))
+        saved=validate_ledger({**self.one,'view_members':[row]})['view_members'][0]
+        self.assertEqual(saved['view_tags'],row['view_tags'])
+        self.assertEqual(saved['member_cnt'],row['member_cnt'])
+
+    def test_empty_plane_names_are_rejected(self):
+        with self.assertRaises(ValidationError):
+            MemberResponse.model_validate({'members':[{**self.row,'view_tags':['  ']}]})
 
     def test_duplicate_json_members_key_rejected(self):
         from app.pipeline import parse_model_content

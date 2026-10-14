@@ -3,11 +3,21 @@ import json
 import re
 from pathlib import Path
 
-from pydantic import Field, StrictInt
+from pydantic import Field, StrictInt, field_validator
 from .domain import Contract
 from .geometry import section
 from .axis_catalog import build_axis_catalog,axis_name
 from .native_pdf import view_context
+
+
+def normalize_view_tag(value):
+    """Keep the named plane, stripping presentation-only drawing title prefixes."""
+    value=value.strip()
+    return axis_name(value) or re.sub(r'^(?:PLAN\s+AT|ELEVATION\s+ON\s+ALIGNMENT)\s+', '',value,flags=re.I).strip()
+
+
+def normalize_view_tags(values):
+    return sorted({name for value in values if (name:=normalize_view_tag(value))})
 
 
 class RecognizedMember(Contract):
@@ -18,6 +28,13 @@ class RecognizedMember(Contract):
     location: str = Field(max_length=4000)
     issue: str | None = Field(max_length=4000)
 
+    @field_validator('view_tags')
+    @classmethod
+    def plane_names_only(cls,values):
+        values=normalize_view_tags(values)
+        if not values:raise ValueError('view_tags 至少需要一个非空的平面或立面名称')
+        return values
+
 
 class MemberResponse(Contract):
     members: list[RecognizedMember]
@@ -26,26 +43,27 @@ class MemberResponse(Contract):
 def view_tag(view):
     """Drawing names are deduplication labels; application IDs remain provenance."""
     if view['kind']=='ELEVATION' and view.get('fixed_label'):
-        return view['fixed_label']
-    return view['title']
+        return normalize_view_tag(view['fixed_label'])
+    return normalize_view_tag(view['title'])
 
 
 def tag_aliases(view):
-    """Accept the user's AT-suffix spelling, retaining catalog identity locally."""
+    """Old titles and internal IDs remain aliases of the canonical plane name."""
     aliases = {value for value in (view.get('id'), view.get('title'), view_tag(view)) if value}
     if view['kind'] == 'PLAN':
         match = re.search(r'\bAT\s+(.+)$', view['title'], re.I)
         if match:
             aliases.add(match[1].strip())
+    aliases.update(normalize_view_tags(aliases))
     return aliases
 
 
 def allowed_model_tags(bundle):
-    """Accept full titles and AT suffixes; local validation flags name collisions."""
+    """Request canonical names; response parsing still accepts legacy full titles."""
     tags = set(bundle['axis_catalog']['current_axes'])
     for view in bundle['view_catalog']:
         tags.update(tag_aliases({'title': view['tag'], 'kind': view['kind']}))
-    return sorted(tags)
+    return normalize_view_tags(tags)
 
 
 def make_input(page, view, stage_one):
@@ -86,7 +104,7 @@ def recognition_prompt(bundle):
 
 def validate_rows(rows, view, stage_one):
     catalog=[v for v in stage_one['views'] if v['kind']!='ISOMETRIC']
-    allowed = {view_tag(v) for v in catalog}|{a['name'] for a in stage_one.get('axis_catalog',{}).get('axes',[])}
+    allowed = {view_tag(v) for v in catalog}|{normalize_view_tag(a['name']) for a in stage_one.get('axis_catalog',{}).get('axes',[])}
     aliases={}
     for v in catalog:
         for alias in tag_aliases(v):
@@ -111,9 +129,9 @@ def validate_rows(rows, view, stage_one):
         if view_tag(source) not in row['view_tags']: issues.append('标签未包含当前来源视图')
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
         axes=stage_one.get('axis_catalog',{})
-        current_axes=axes.get('per_view',{}).get(view['id'],[])
-        axis_names={a['name'] for a in axes.get('axes',[])}
-        if any((axis_name(tag) or tag) in axis_names and (axis_name(tag) or tag) not in current_axes for tag in row['view_tags']):
+        current_axes=set(normalize_view_tags(axes.get('per_view',{}).get(view['id'],[])))
+        axis_names={normalize_view_tag(a['name']) for a in axes.get('axes',[])}
+        if any(tag in axis_names and tag not in current_axes for tag in row['view_tags']):
             issues.append('引用的轴线或面名称未绑定到第一阶段的当前视图')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')

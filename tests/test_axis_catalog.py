@@ -88,4 +88,5 @@ class AxisCatalogTests(unittest.TestCase):
              'length_mm':6000,'location':'EL.23.450横梁','issue':None}
         checked=validate_rows([row],elevation,one)[0]
         self.assertEqual(checked['checks'],[])
-        self.assertIn(plan['title'],checked['view_tags'])
+        self.assertIn('EL.23.450(TOS)',checked['view_tags'])
+        self.assertNotIn(plan['title'],checked['view_tags'])

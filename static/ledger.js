@@ -1,6 +1,11 @@
 'use strict';
 (function(root) {
-    const tagOf=view=>view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title;
+    function normalizeTag(value) {
+        const name=String(value).trim().replace(/^(?:PLAN\s+AT|ELEVATION\s+ON\s+ALIGNMENT)\s+/i,'').trim();
+        const level=name.match(/^EL\.?\s*([+-]?\d+(?:\.\d+)?)\s*(?:\(\s*([A-Za-z][\w -]*)\s*\))?$/i);
+        return level?'EL.'+level[1]+(level[2]?'('+level[2].trim().toUpperCase()+')':''):name;
+    }
+    const tagOf=view=>normalizeTag(view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title);
     function summarize(rows) {
         const groups=new Map();let quantity=0,unknownQuantity=0;
         for(const row of rows) {
@@ -22,7 +27,7 @@
         const choices=doc.createElement('div');details.append(choices);
         const add=doc.createElement('input');add.type='text';add.placeholder='补充图纸标签名称';
         const addButton=doc.createElement('button');addButton.type='button';addButton.textContent='添加标签';
-        function update(tags) {row.view_tags=[...new Set(tags)];onChange();render();}
+        function update(tags) {row.view_tags=[...new Set(tags.map(normalizeTag).filter(Boolean))];onChange();render();}
         function render() {
             selected.replaceChildren();choices.replaceChildren();
             for(const tag of row.view_tags) {
@@ -40,6 +45,6 @@
         addButton.onclick=()=>{const tags=add.value.split(/[,，;；\n]+/).map(t=>t.trim()).filter(Boolean);if(tags.length){update([...row.view_tags,...tags]);add.value='';}};
         wrap.append(selected,details,add,addButton);render();return wrap;
     }
-    root.LedgerTools={summarize,tagEditor,tagOf};
+    root.LedgerTools={summarize,tagEditor,tagOf,normalizeTag};
     if(typeof module!=='undefined')module.exports=root.LedgerTools;
 })(globalThis);

@@ -23,6 +23,7 @@ from .store import JobStore, StoreError
 from .audit import AuditLog
 from .discovery_inventory import build_inventory
 from .axis_catalog import build_axis_catalog
+from .member_recognition import normalize_view_tags
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -135,6 +136,9 @@ def create_app(root=ROOT, start_workers=True):
                         if not view.get('axes_reviewed'):
                             view['axis_labels']=result['data']['axis_catalog']['per_view'].get(view['id'],[])
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
+        if stage==2 and result['data'].get('recognition_mode')=='view_ledger':
+            for row in result['data'].get('view_members',[]):
+                row['view_tags']=normalize_view_tags(row['view_tags'])
         return result
 
     @application.patch('/api/jobs/{job_id}/stages/{stage}')

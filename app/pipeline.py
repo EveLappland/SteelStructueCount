@@ -127,7 +127,14 @@ def parse_model_content(content, contract, entry, audit=None):
             if isinstance(observation,dict):
                 observation['id']=f"{entry['id']}-o{index:03d}"
                 observation['view_id']=entry['id']
-    return contract.model_validate(payload).model_dump()
+    result=contract.model_validate(payload).model_dump()
+    if contract is MemberResponse and audit:
+        for index,(raw,row) in enumerate(zip(payload['members'],result['members']),1):
+            if raw['view_tags']!=row['view_tags']:
+                audit.event('MODEL_VIEW_TAGS_NORMALIZED',row_index=index,
+                            original_tags=raw['view_tags'],normalized_tags=row['view_tags'],
+                            reason='仅保留平面/立面名称，去除标题前缀及重复标签；不合并构件或改变数量。')
+    return result
 
 
 def response_content(raw):
