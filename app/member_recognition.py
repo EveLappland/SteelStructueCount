@@ -7,7 +7,6 @@ from pathlib import Path
 from pydantic import Field, StrictInt
 from .domain import Contract
 from .geometry import section
-from .native_pdf import view_context, inside
 from .axis_catalog import build_axis_catalog
 
 
@@ -32,40 +31,26 @@ def view_tag(view):
 
 
 def make_input(page, view, stage_one):
-    # Keep geometry auxiliary: a large path dump can overwhelm the visual task.
-    context = view_context(page, view['bbox'], max_vectors=120)
+    """Only confirmed names and axes travel with the image, never native geometry."""
     context_views=[view if v['id']==view['id'] else v for v in stage_one['views']]
-    axes=build_axis_catalog([page],context_views)
-    catalog = stage_one.get('discovery_inventory', {}).get('profiles', [])
-    labels = [e for p in catalog for e in p.get('evidence', [])
-              if e.get('page_id') == page['id'] and inside(e, view['bbox'])]
-    # Native labels are also retained in context.texts even for older inventory formats.
+    axes=stage_one.get('axis_catalog') or build_axis_catalog([page],context_views)
     return {
-        'current_view_id': view['id'], 'current_view_title': view['title'],
         'current_view_tag':view_tag(view),
-        'page': {'id': page['id'], 'file': page['file'], 'page': page['page'],
-                 'width_pt': page['width_pt'], 'height_pt': page['height_pt']},
-        'crop_bbox_page_normalized': view['bbox'],
-        'coordinate_usage': '文字和矢量位置为原PDF整页归一化坐标，仅用于与裁切图片关联。',
-        'recognition_priority':'高清图片及识别步骤优先；原生文字用于读数，少量矢量仅辅助轮廓，不要求坐标求解。',
-        'profile_catalog': stage_one.get('profile_catalog', []),
-        'axis_catalog':axes,
-        'view_catalog': [{**{k: v.get(k) for k in ('id', 'title', 'kind', 'fixed_label',
-                                               'elevation_m', 'elevation_basis')},'tag':view_tag(v)}
-                         for v in stage_one['views']],
-        'profile_labels': labels, 'native_evidence': context,
+        'axis_catalog':{'axes':[{'name':a['name']} for a in axes['axes']],
+                        'axis_count':axes['axis_count'],
+                        'current_axes':axes['per_view'].get(view['id'],[])},
+        'view_catalog':[{'tag':view_tag(v),'kind':v['kind'],
+                         'alignment':v.get('fixed_label') if v['kind']=='ELEVATION' else None,
+                         'axes':axes['per_view'].get(v['id'],[])}
+                        for v in context_views if v['kind']!='ISOMETRIC'],
     }
 
 
 def recognition_prompt(bundle):
     guidance = (Path(__file__).parent/'prompts'/'stage_two_members.md').read_text(encoding='utf-8')
-    # Avoid repeating all native labels with file/page/catalog metadata in the prompt.
-    compact={**bundle,'profile_labels':[{'text':e['text'],'bbox':e['bbox']} for e in bundle['profile_labels']]}
-    return guidance + ('\n程序提取的 axis_catalog 是辅助轴面目录，名称均来自本项目图纸。'
-                       '根据当前构件走向、端点和所在轴线，从目录选择 view_tags；不要把所有轴面都赋给每根构件。'
-                       '目录中的轴面即使没有上传相应立面图片，也可以作为有图示依据的所属轴面标签。'
-                       '保留原名，不套用其他项目的轴号；不要仅因尺寸数字相同推断同一轴面。'
-                       '\n输入包：\n') + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
+    # Strict whitelist: old callers cannot accidentally send text/vector dumps.
+    compact={key:bundle[key] for key in ('current_view_tag','view_catalog','axis_catalog','image') if key in bundle}
+    return guidance + '\n输入包：\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
 
 
 def validate_rows(rows, view, stage_one):
@@ -91,7 +76,11 @@ def validate_rows(rows, view, stage_one):
         row['view_tags'] = sorted(set(tags))
         if view_tag(source) not in row['view_tags']: issues.append('标签未包含当前来源视图')
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
-        if len(row['view_tags']) < 2: issues.append('跨视图标签尚不完整')
+        axes=stage_one.get('axis_catalog',{})
+        current_axes=axes.get('per_view',{}).get(view['id'],[])
+        axis_names={a['name'] for a in axes.get('axes',[])}
+        if any(tag in axis_names and tag not in current_axes for tag in row['view_tags']):
+            issues.append('引用的轴面未绑定到第一阶段的当前视图')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')
         formulas=re.findall(r'(?:sqrt|√)\s*\(\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\+\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\)',row['basis'],re.I)

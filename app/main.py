@@ -128,7 +128,8 @@ def create_app(root=ROOT, start_workers=True):
             inventory=build_inventory(result['data'],load_native(directory(job_id)))
             result['data']['discovery_inventory']=inventory
             result['data']['profile_catalog']=[p['profile'] for p in inventory['profiles']]
-            if stage==2:result['data']['axis_catalog']=build_axis_catalog(load_native(directory(job_id)),result['data']['views'])
+            if stage==2 or result['data'].get('workflow')=='image_first':
+                result['data']['axis_catalog']=build_axis_catalog(load_native(directory(job_id)),result['data']['views'])
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
         return result
 
@@ -139,13 +140,15 @@ def create_app(root=ROOT, start_workers=True):
         if previous['revision']!=body.revision:
             raise StoreError('阶段版本已改变，请刷新后再操作。')
         try:
-            data=validate_draft(folder,stage,body.data,store.stage(job_id,2)['data'] if stage==3 else None)
+            data=validate_draft(folder,stage,body.data,store.stage(job_id,2)['data'] if stage==3 else None,
+                                stage_one=store.stage(job_id,1)['data'] if stage==2 else None)
         except (ValidationError,ValueError,KeyError) as exc:
             raise HTTPException(422,str(exc)) from exc
+        if stage==1 and data.get('workflow')=='image_first':render_draft(folder,data)
         store.edit(job_id,stage,body.revision,data,body.reason)
         AuditLog(folder,stage).event('DRAFT_EDITED',revision=body.revision+1,reason=body.reason,
                                     downstream_invalidated=True)
-        if stage<=2:
+        if stage<=2 and data.get('workflow')!='image_first':
             render_draft(folder,data)
         return store.stage(job_id,stage)
 
@@ -218,9 +221,17 @@ def create_app(root=ROOT, start_workers=True):
                 allowed.update(v['id']+'.jpg' for v in store.stage(job_id,n)['data'].get('views',[]))
                 allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[])
                                if v.get('localization') or store.stage(job_id,n)['data'].get('recognition_mode')=='view_ledger')
+                allowed.update(v['image_file'] for v in store.stage(job_id,n)['data'].get('views',[]) if v.get('image_file'))
+                allowed.update(name for v in store.stage(job_id,n)['data'].get('views',[]) for name in v.get('detail_files',[]))
             except StoreError:
                 pass
         path=folder/'views'/filename
+        for snapshot in store.snapshots(job_id):
+            if snapshot['stage'] not in (1,2):continue
+            for view in snapshot.get('data',{}).get('views',[]):
+                if view.get('image_file'):allowed.add(view['image_file'])
+                allowed.update(view.get('detail_files',[]))
+        if path.resolve().parent!=(folder/'views').resolve():raise HTTPException(404,'未找到图纸预览。')
         if filename not in allowed or not path.is_file():
             raise HTTPException(404,'未找到图纸预览。')
         return FileResponse(path,media_type='image/png' if path.suffix=='.png' else 'image/jpeg')

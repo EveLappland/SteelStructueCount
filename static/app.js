@@ -1,6 +1,6 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
-const stageNames = {1:'钢材规格与视图目录',2:'确认首尾与名义长度',3:'跨视图匹配与单根统计'};
+const stageNames = {1:'视图、轴线与高清裁切',2:'图片识别钢材台账',3:'跨视图匹配与单根统计'};
 const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, activeObservation=null, clickMode='', evidenceFocus=null, manualTargets=[], matchSource=null;
@@ -61,7 +61,7 @@ async function openStage(n,checkDirty=true) { if(checkDirty&&dirty&&!window.conf
 function renderStage() { $('#review').hidden=false;$('#stage-title').textContent=`阶段 ${stageNumber} · ${stageNames[stageNumber]}`;$('#stage-state').textContent=`版本 ${draft.revision} · ${stateNames[draft.status]}`;$('#stage-content').replaceChildren();$('#warnings').replaceChildren();const data=draft.data;const editable=['awaiting_review','approved','failed','interrupted'].includes(draft.status)&&!['queued','running','exporting'].includes(job.state);$('#save').disabled=!editable;$('#approve').disabled=draft.status!=='awaiting_review';$('#retry').disabled=!(job.active_stage===stageNumber||job.active_stage===4&&stageNumber===3)||!['failed','interrupted','awaiting_review'].includes(job.state);$('#approve').textContent=stageNumber===3?'确认并导出单根统计':'确认并进入下一阶段';
 renderInventory();if(!data.views&&stageNumber<=2){$('#stage-content').append(node('p','该阶段尚未生成草稿。执行失败时可修正 API 设置后重试。'));refreshJson();renderHistory();return;}
 const warnings=stageNumber===1?data.warnings||[]:stageNumber===2?[...(data.warnings||[]),...(data.frame_issues||[]),...(data.candidates||[]).filter(c=>!c.confirmed).map(c=>`${c.observation_id}：${c.issues.join('；')}`)]:data.exceptions.map(e=>`${e.observation_id}：${e.issues.join('；')}`);warnings.forEach(w=>$('#warnings').append(node('p',w)));
-if(stageNumber===1&&data.analysis_pending){$('#stage-content').append(node('p','第一阶段仅生成规格和视图目录，不调用 AI。确认后，第二阶段才定位视图区域、识别候选构件首尾和尺寸关系。'));}else if(stageNumber===2&&data.recognition_mode==='view_ledger'){renderViewLedger();}else if(stageNumber<=2){renderFrame();renderObservations();}else renderMatches();refreshJson();renderHistory(); }
+if(stageNumber===1&&data.workflow==='image_first'){renderPreparedCatalog();}else if(stageNumber===1&&data.analysis_pending){$('#stage-content').append(node('p','第一阶段仅生成规格和视图目录，不调用 AI。确认后，第二阶段才定位视图区域、识别候选构件首尾和尺寸关系。'));}else if(stageNumber===2&&data.recognition_mode==='view_ledger'){renderViewLedger();}else if(stageNumber<=2){renderFrame();renderObservations();}else renderMatches();refreshJson();renderHistory(); }
 function renderHistory() { const target=$('#history');target.replaceChildren(node('h3','修改与确认记录'));for(const snap of draft.snapshots||[]){const row=node('p',`${snap.at} · v${snap.revision} · ${snap.action} · ${snap.reason} `);row.append(button('载入此草稿',()=>{if(!snap.data||!Object.keys(snap.data).length)return;draft.data=structuredClone(snap.data);mark();renderStage();dirty=true;}));target.append(row);} }
 function renderFrame() { const data=draft.data,details=node('details','',{class:'frame-editor'});details.append(node('summary','项目坐标系、尺寸链与标高（毫米）'));const frame=data.frame;details.append(input('标高原点 EL（m）',frame.z_origin_m,v=>{frame.z_origin_m=Number(v);mark(frame);},'number'));
 const axisRows=frame.axes.map(a=>[select('方向',a.direction,[['X','X'],['Y','Y']],v=>setField(a,'direction',v)),input('原始轴名',a.label,v=>setField(a,'label',v)),input('坐标 mm（可留空由尺寸链求解）',a.value_mm,v=>setField(a,'value_mm',v,'number'),'number'),input('证据 ID',a.evidence_ids.join(','),v=>{a.evidence_ids=splitRefs(v);mark(a);}),button('删除',()=>{frame.axes=frame.axes.filter(x=>x!==a);mark();renderStage();})]);details.append(table(['方向','轴线','锚点','证据','操作'],axisRows));details.append(button('添加轴线',()=>{frame.axes.push({direction:'X',label:'新轴线',value_mm:null,evidence_ids:[]});mark();renderStage();}));
@@ -176,8 +176,9 @@ function renderViewLedger() {
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    target.append(table(['视图','识别状态','标签数','构件段数（未去重）'],data.view_analysis.map(a=>[
-        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,a.status,a.label_count,a.member_cnt])));
+    target.append(table(['视图','识别状态','标签数','构件段数（未去重）','规格覆盖差异'],data.view_analysis.map(a=>[
+        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,a.status,a.label_count,a.member_cnt,
+        (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}个候选段`).join('；')])));
     const choices=data.views.filter(v=>v.kind!=='ISOMETRIC');
     const panel=node('section');
     panel.addEventListener('input',updateSummaries);
@@ -189,7 +190,7 @@ function renderViewLedger() {
         const axes=axisCatalog.per_view[id]||[];
         panel.append(node('p',`当前视图轴面数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
-        panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${id}.jpg`,alt:view.title,style:'max-width:100%'}));
+        panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
             LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:'ELEVATION',title:a.name,fixed_label:a.name}))],()=>{mark(r);refreshJson();}),
@@ -204,4 +205,31 @@ function renderViewLedger() {
     target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
     if(choices.length)show(choices[0].id);
     else updateSummaries();
+}
+
+function renderPreparedCatalog() {
+    const data=draft.data,target=$('#stage-content'),panel=node('section');
+    target.append(node('p','第一阶段请核对每个视图的高清裁切、标题、所在轴面和图示轴线。第二阶段只发送这里确认的图片、精简名称目录和你的提示词。'));
+    const catalog=data.axis_catalog||{axis_count:0,per_view:{}};
+    target.append(node('p',`共 ${data.views.length} 个视图，${catalog.axis_count} 个轴面`));
+    function show(id) {
+        const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren();
+        const image=view.image_file||view.id+'.jpg';
+        panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${image}`,alt:view.title,style:'max-width:100%'}),
+                     node('a','打开300DPI原图',{href:`/api/jobs/${jobId}/views/${image}`,target:'_blank'}));
+        if(view.detail_files?.length){const details=node('details');details.append(node('summary',`同视图局部放大图（${view.detail_files.length} 张，识别时与全图一起发送）`));for(const file of view.detail_files)details.append(node('img','',{src:`/api/jobs/${jobId}/views/${file}`,alt:'同一视图局部',style:'max-width:100%'}));panel.append(details);}
+        panel.append(input('原始视图标题',view.title,value=>setField(view,'title',value)));
+        if(view.kind==='ELEVATION')panel.append(input('此立面所在轴面',view.fixed_label,value=>setField(view,'fixed_label',value)));
+        panel.append(input('此视图中的轴线名称（逗号分隔）',(view.axis_labels||[]).join(','),value=>{
+            view.axis_labels=value.split(/[,，;；\n]+/).map(t=>t.trim()).filter(Boolean);view.axes_reviewed=true;mark(view);
+        }));
+        panel.append(input('裁切区域 [左,上,右,下]，整页归一化',JSON.stringify(view.bbox),value=>{
+            try{const box=JSON.parse(value);if(box.length!==4)throw Error('需要四个坐标');view.bbox=box;view.region_confirmed=false;mark(view);}catch{}
+        }));
+        const label=node('label'),check=node('input','',{type:'checkbox'});check.checked=view.region_confirmed;
+        check.onchange=()=>{view.region_confirmed=check.checked;mark(view);};label.append(check,document.createTextNode('裁切区域已核对，可用于第二阶段识别'));panel.append(label);
+        const diagnostic=node('details');diagnostic.append(node('summary','查看裁切检查依据'),node('pre',JSON.stringify(view.localization,null,2)));panel.append(diagnostic);
+    }
+    target.append(select('图纸视图',data.views[0]?.id,data.views.map(v=>[v.id,v.title]),show),panel);
+    if(data.views.length)show(data.views[0].id);
 }

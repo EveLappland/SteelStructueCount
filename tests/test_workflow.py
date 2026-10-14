@@ -119,7 +119,7 @@ class ApiWorkflowTest(unittest.TestCase):
             if contract is MemberResponse:
                 import json
                 bundle=json.loads(prompt.split('输入包：\n',1)[1])
-                return {'members':[{'spec':'HEA240','view_tags':[v['id'] for v in bundle['view_catalog']],
+                return {'members':[{'spec':'HEA240','view_tags':[v['tag'] for v in bundle['view_catalog']],
                                     'member_cnt':1,'length_mm':6000,'basis':'明确端部，标注6000','issue':None}]}
             view_id='plan' if '-view01' in str(response_path) else 'elevation-A'
             selected=[o for o in data['observations'] if o['view_id']==view_id]
@@ -136,49 +136,55 @@ class ApiWorkflowTest(unittest.TestCase):
         extract(directory,emit,audit)
         return validate_draft(directory,1,data)
 
-    def test_native_catalog_pauses_without_api_then_analyzes_on_approval(self):
-        identity=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))]).json()['id']
-        base=f'/api/jobs/{identity}'
-        with patch('app.pipeline.OpenAI') as constructor,patch('app.pipeline.model_call') as model:
-            self.app.state.worker(identity,1)
-            constructor.assert_not_called();model.assert_not_called()
-        stage=self.client.get(base+'/stages/1').json()
-        self.assertTrue(stage['data']['analysis_pending'])
-        self.assertEqual(stage['data']['observations'],[])
-        self.assertEqual(stage['data']['discovery_inventory']['profile_count'],1)
-        self.assertEqual(self.client.get(base+'/stages/2').status_code,404)
-        self.assertEqual(self.client.get(base).json()['state'],'awaiting_review')
-        response=self.client.post(base+'/stages/1/approve',json={'revision':1,
-            'settings':{'base_url':'https://example.test','api_key':'second-stage-secret','model':'test'}})
-        self.assertEqual(response.status_code,200,response.text)
+    def test_image_catalog_then_recognition_and_upstream_invalidation(self):
+        from app.member_recognition import MemberResponse
         self.legacy_draft['views'][1]['title']='ELEVATION ON ALIGNMENT A'
         for index,view in enumerate(self.legacy_draft['views']):
             view['bbox']=[0,0,.49,1] if index==0 else [.51,0,1,1]
             view['structure_bbox']=[.06,.2,.4,.4] if index==0 else [.55,.2,.9,.4]
-        for o in self.legacy_draft['observations']:
-            o['image_start']=[.1,.25] if o['view_id']=='plan' else [.6,.25]
-            o['image_end']=[.35,.25] if o['view_id']=='plan' else [.85,.25]
-        with patch('app.pipeline.OpenAI') as constructor,patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
+        identity=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
+                                  data={'base_url':'https://example.test','api_key':'catalog-test-key','model':'test'}).json()['id']
+        base=f'/api/jobs/{identity}'
+        with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
+            self.app.state.worker(identity,1)
+            self.assertTrue(model.called)
+            self.assertTrue(all(call.args[5] is ViewResponse for call in model.call_args_list))
+        stage=self.client.get(base+'/stages/1').json()
+        self.assertEqual(stage['status'],'awaiting_review')
+        self.assertEqual(stage['data']['workflow'],'image_first')
+        self.assertEqual(stage['data']['observations'],[])
+        self.assertTrue(all(v['image_file'] for v in stage['data']['views']))
+        image=stage['data']['views'][0]['image_file']
+        original=self.client.get(base+'/views/'+image).content
+        self.assertTrue(original.startswith(b'\x89PNG'))
+        self.assertEqual(self.client.get(base+'/stages/2').status_code,404)
+        response=self.client.post(base+'/stages/1/approve',json={'revision':1,'acknowledge_pending':True,
+            'settings':{'base_url':'https://example.test','api_key':'recognition-test-key','model':'test'}})
+        self.assertEqual(response.status_code,200,response.text)
+        with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
             self.app.state.worker(identity,2)
-            self.assertTrue(constructor.called);self.assertTrue(model.called)
-            self.assertEqual(constructor.call_args.kwargs['api_key'],'second-stage-secret')
+            self.assertTrue(model.called)
+            self.assertTrue(all(call.args[5] is MemberResponse for call in model.call_args_list))
+            self.assertTrue(all(call.args[3]['image_path'].endswith('_300dpi.png') for call in model.call_args_list))
+            self.assertTrue(all('native_evidence' not in call.args[2] for call in model.call_args_list))
         stage_two=self.client.get(base+'/stages/2').json()
         self.assertEqual(stage_two['status'],'awaiting_review')
-        self.assertFalse(stage_two['data']['analysis_pending'])
-        self.assertEqual(stage_two['data']['recognition_mode'],'view_ledger')
         self.assertEqual(len(stage_two['data']['view_members']),2)
-        self.assertEqual(stage_two['data']['observations'],[])
-        self.assertEqual(stage_two['data']['view_members'][0]['member_cnt'],1)
-        edited=stage_two['data']
-        edited['view_members'][0]['length_mm']=5000
+        self.assertTrue(any(a.get('coverage_differences') for a in stage_two['data']['view_analysis']))
+        self.assertEqual(self.client.get(base+'/views/'+image).content,original)
+        edited=stage_two['data'];edited['view_members'][0]['length_mm']=5000
         edit=self.client.patch(base+'/stages/2',json={'revision':stage_two['revision'],'data':edited,'reason':'尺寸人工修正'})
         self.assertEqual(edit.status_code,200,edit.text)
         self.assertEqual(edit.json()['data']['view_members'][0]['length_mm'],5000)
         stale=self.client.patch(base+'/stages/2',json={'revision':stage_two['revision'],'data':edited,'reason':'旧版本'})
         self.assertEqual(stale.status_code,409)
-        response=self.client.post(base+'/stages/2/approve',json={'revision':edit.json()['revision'],'acknowledge_pending':True})
-        self.assertEqual(response.status_code,409)
-        self.assertEqual(self.client.get(base).json()['state'],'awaiting_review')
+        tampered=json.loads(json.dumps(edit.json()['data']));tampered['views'][0]['title']='UNCONFIRMED PLAN'
+        rejected=self.client.patch(base+'/stages/2',json={'revision':edit.json()['revision'],'data':tampered,'reason':'试图篡改目录'})
+        self.assertEqual(rejected.status_code,422)
+        upstream=stage['data'];upstream['views'][0]['axis_labels']=['PROJECT-Q/9'];upstream['views'][0]['axes_reviewed']=True
+        edit=self.client.patch(base+'/stages/1',json={'revision':stage['revision'],'data':upstream,'reason':'人工确认轴线'})
+        self.assertEqual(edit.status_code,200,edit.text)
+        self.assertEqual(self.client.get(base+'/stages/2').json()['status'],'stale')
 
     def tearDown(self):
         self.client.__exit__(None,None,None)

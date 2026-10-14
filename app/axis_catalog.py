@@ -13,6 +13,7 @@ def axis_name(text):
 
 
 def build_axis_catalog(pages,views):
+    native={t['id']:t for page in pages for t in page['texts']}
     axes={};per_view={v['id']:[] for v in views if v['kind']!='ISOMETRIC'}
     def add(name,view_ids=(),evidence=None,uploaded=None):
         if not name:return
@@ -24,14 +25,19 @@ def build_axis_catalog(pages,views):
         if uploaded and uploaded not in entry['uploaded_view_ids']:entry['uploaded_view_ids'].append(uploaded)
     for view in views:
         if view['kind']=='ELEVATION':add(view.get('fixed_label'),[view['id']],uploaded=view['id'])
+        if view.get('axes_reviewed'):
+            for name in view.get('axis_labels',[]):add(name,[view['id']],{'kind':'CONFIRMED_VIEW_AXIS'})
+            continue
         for mark in view.get('axis_marks',[]):
             if mark.get('direction') not in ('X','Y'):continue
+            references=[native[e] for e in mark.get('evidence_ids',[]) if e in native]
+            if references and not any(inside(t,view['bbox']) for t in references):continue
             add(mark['label'],[view['id']],{'kind':'VIEW_AXIS_MARK','evidence_ids':mark.get('evidence_ids',[])})
     for page in pages:
         local=[v for v in views if v.get('page_id')==page['id'] and v['kind']!='ISOMETRIC' and v.get('region_confirmed',True)]
         for text in page['texts']:
             name=axis_name(text['text'])
-            owners=[v['id'] for v in local if inside(text,v['bbox'])]
+            owners=[v['id'] for v in local if not v.get('axes_reviewed') and inside(text,v['bbox'])]
             if name and owners:
                 add(name,owners,{'id':text['id'],'page_id':page['id'],'text':text['text'],'bbox':text['bbox']})
     # Full native names take precedence over short marks only when unambiguous

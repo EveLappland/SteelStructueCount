@@ -74,6 +74,11 @@ class View(Contract):
     boundary_reason: str = ''
     boundary_evidence_ids: list[str] = Field(default_factory=list)
     localization: dict = Field(default_factory=dict)
+    image_file: str = ''
+    image_bbox: list[float] = Field(default_factory=list)
+    detail_files: list[str] = Field(default_factory=list)
+    axis_labels: list[str] = Field(default_factory=list)
+    axes_reviewed: bool = False
 
     @model_validator(mode='after')
     def valid_box(self):
@@ -168,6 +173,8 @@ class Member(Contract):
 
 
 class StageOne(Contract):
+    workflow: Literal['legacy','image_first'] = 'legacy'
+    axis_catalog: dict = Field(default_factory=dict)
     views: list[View]
     frame: CoordinateFrame = Field(default_factory=CoordinateFrame)
     observations: list[Observation] = Field(default_factory=list)
@@ -181,7 +188,6 @@ class StageOne(Contract):
 
 
 class StageTwo(StageOne):
-    axis_catalog: dict = Field(default_factory=dict)
     recognition_mode: Literal['coordinate_legacy','view_ledger'] = 'coordinate_legacy'
     view_members: list[dict] = Field(default_factory=list)
     view_analysis: list[dict] = Field(default_factory=list)

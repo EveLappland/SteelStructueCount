@@ -25,24 +25,19 @@ class MemberRecognitionTests(unittest.TestCase):
               'texts':[{'id':'t1','text':'HEA240','bbox':[.1,.1,.2,.2]},
                        {'id':'t2','text':'HEA300','bbox':[.6,.1,.7,.2]}], 'vectors':[]}
         bundle=make_input(page,self.view,self.one)
-        self.assertEqual(bundle['profile_catalog'],self.one['profile_catalog'])
-        self.assertEqual([t['id'] for t in bundle['native_evidence']['texts']],['t1'])
-        self.assertEqual(bundle['current_view_id'],'plan1')
-        self.assertIn('OF SPLICE',recognition_prompt(bundle))
-        self.assertIn('member_cnt',recognition_prompt(bundle))
-        # Users can edit the prompt; test assembly rather than frozen wording.
+        self.assertEqual(bundle['current_view_tag'],self.view['title'])
+        self.assertNotIn('native_evidence',bundle)
+        self.assertNotIn('profile_labels',bundle)
         from pathlib import Path
         guidance=(Path(__file__).parents[1]/'app/prompts/stage_two_members.md').read_text(encoding='utf-8')
         self.assertTrue(recognition_prompt(bundle).startswith(guidance+'\n'))
 
-    def test_vectors_remain_small_auxiliary_context(self):
-        vectors=[{'id':f'v{i}','bbox':[.1,.1,.2,.2],'points':[[.1,.1],[.2,.2]],'style':{}}
-                 for i in range(200)]
-        page={'id':'p','file':'drawing.pdf','page':1,'width_pt':800,'height_pt':600,'texts':[],'vectors':vectors}
-        context=make_input(page,self.view,self.one)['native_evidence']
-        self.assertEqual(context['vector_total'],200)
-        self.assertEqual(len(context['vectors']),120)
-        self.assertTrue(context['vector_context_truncated'])
+    def test_native_evidence_cannot_leak_into_prompt(self):
+        text=recognition_prompt({'current_view_tag':'PLAN','view_catalog':[],
+                                'axis_catalog':{},'native_evidence':{'vectors':['VECTOR_SECRET']},
+                                'texts':['TEXT_SECRET'],'profile_labels':['LABEL_SECRET']})
+        for forbidden in ('VECTOR_SECRET','TEXT_SECRET','LABEL_SECRET','native_evidence'):
+            self.assertNotIn(forbidden,text)
 
     def test_cross_view_records_remain_independent_and_tags_sorted(self):
         a=validate_rows([self.row],self.view,self.one)[0]

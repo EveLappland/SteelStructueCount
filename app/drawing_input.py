@@ -36,6 +36,10 @@ def is_primary_sheet(entry):
 
 
 def render_data_uri(entry, max_dimension=None):
+    if entry.get('image_path'):
+        data=Path(entry['image_path']).read_bytes()
+        if not data.startswith(b'\x89PNG\r\n\x1a\n'):raise ValueError('已确认视图图片必须是PNG')
+        return 'data:image/png;base64,'+base64.b64encode(data).decode('ascii')
     if entry.get('image_dpi'):
         return 'data:image/png;base64,' + base64.b64encode(render_png(entry,dpi=entry['image_dpi'])).decode('ascii')
     image_bytes = render_jpeg(entry, max_dimension=max_dimension)

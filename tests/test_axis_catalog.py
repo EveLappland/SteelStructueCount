@@ -4,6 +4,18 @@ from app.member_recognition import make_input,validate_rows
 
 
 class AxisCatalogTests(unittest.TestCase):
+    def test_five_elevations_bind_their_own_axes_independently(self):
+        views=[];texts=[]
+        for index in range(5):
+            x=index/5
+            views.append({'id':str(index),'page_id':'p','kind':'ELEVATION','title':f'ELEVATION FRAME-{index}',
+                          'fixed_label':f'FRAME-{index}','bbox':[x,0,x+.19,1]})
+            texts.append({'id':f't{index}','text':f'GRID SEGMENT-{index}','bbox':[x+.02,.2,x+.1,.22]})
+        result=build_axis_catalog([{'id':'p','texts':texts}],views)
+        self.assertEqual(result['elevation_view_count'],5)
+        for index in range(5):
+            self.assertEqual(result['per_view'][str(index)],[f'FRAME-{index}',f'SEGMENT-{index}'])
+
     def test_generic_names_exclude_steel_and_dimension_text(self):
         for name in ('WEST-FRAME/C','BUILDING-Q/12','GRID ALPHA','轴线 9'):
             self.assertIsNotNone(axis_name(name))

@@ -22,6 +22,9 @@ def localization_prompt(page,frame):
         'Exclude sheet border grids, north arrow, references, notes tables, title blocks and node/plate details. '
         'If a complete boundary cannot be determined, explicitly say so in boundary_reason. '
         'Preserve printed axis names; determine global directions consistently with the project frame. '
+        'For each view return axis_marks for the grid names visible inside THAT view, with original TEXT evidence_ids. '
+        'fixed_label is the alignment of this elevation, not the list of all axes visible in it. '
+        'Never reuse a repeated grid label from a neighbouring view as this view evidence. '
         'PLAN uses X/Y with fixed Z elevation; ISOMETRIC provides coverage only. '
         f"Native independent titles: {json.dumps(page['titles'],ensure_ascii=False)}\n"
         f"Project frame: {json.dumps(frame,ensure_ascii=False)}\n"
