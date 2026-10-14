@@ -519,7 +519,7 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
                     for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row,
                                                reason='AI候选台账，待人工核对；未执行跨视图去重。')
                     if bundle['native_evidence']['vector_context_truncated']:
-                        warnings.append(f"{view['title']} 矢量上下文已截取，完整原始证据保存在 native 目录。")
+                        emit(f"{view['title']} 使用 {len(bundle['native_evidence']['vectors'])}/{bundle['native_evidence']['vector_total']} 条辅助矢量；图片完整，原始矢量已保存。")
                     view_analysis.append({'view_id':view['id'],'status':status,'member_cnt':count,
                                           'label_count':len(bundle['profile_labels']),
                                           'input_file':str(bundle_path.relative_to(directory))})

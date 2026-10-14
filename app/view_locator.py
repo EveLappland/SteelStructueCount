@@ -68,7 +68,7 @@ def refine_view_regions(page,views,audit=None):
         cores[v['id']]=v.get('structure_bbox') or v['bbox']
     for view in result:
         identity=view['id'];before=list(view['bbox']);box=list(before)
-        issues=[];included=[];ambiguous=[];vector_ids=[]
+        issues=[];included=[];ambiguous=[];vector_ids=[];rejected=[]
         title=anchors.get(identity);core=cores[identity]
         if title:
             view['title_bbox']=title['title_bbox']
@@ -112,11 +112,25 @@ def refine_view_regions(page,views,audit=None):
         missing=[e for e in claimed if e not in native and not any(v['id']==e for v in page['vectors'])]
         if missing:issues.append('模型边界依据引用不存在的证据。')
         for evidence_id in claimed:
-            if evidence_id in native and not contains(box,native[evidence_id]['bbox']):issues.append('模型引用的边界文字不在裁切内：'+evidence_id)
+            if evidence_id in native and not contains(box,native[evidence_id]['bbox']):
+                item=native[evidence_id];p=center(item['bbox'])
+                ownership=sorted((distance(p,c,page),key) for key,c in cores.items())
+                owner=ownership[0][1]
+                # A repeated axis name on the neighbouring view is a bad model
+                # citation, not evidence that this crop must include that view.
+                if owner!=identity and owner in anchors and contains(cores[owner],item['bbox']) and (
+                        len(ownership)==1 or ownership[1][0]-ownership[0][0]>3):
+                    rejected.append({'id':evidence_id,'text':item['text'],'owner_view':owner,
+                                     'reason':'证据完整位于另一独立视图结构区域，拒绝模型跨视图错引，不扩大裁切。'})
+                else:issues.append('模型引用的边界文字不在裁切内：'+evidence_id)
+        rejected_ids={e['id'] for e in rejected}
+        view['boundary_evidence_ids']=[e for e in claimed if e not in rejected_ids]
+        view['evidence_ids']=[e for e in view['evidence_ids'] if e not in rejected_ids]
         view['bbox']=box
         view['localization']={'status':'needs_review' if issues or ambiguous else 'checked',
             'model_bbox':before,'structure_bbox':core,'final_bbox':view['bbox'],'included_text_ids':included,
             'included_vector_ids':vector_ids,'ambiguous_text_ids':ambiguous,'issues':issues,
+            'rejected_boundary_evidence':rejected,
             'reason':'标题为锚点，按到结构区域的距离分配附近轴线、尺寸候选和说明；补入完整文字框及局部短线。'}
         view['region_confirmed']=not issues and not ambiguous
         if audit:audit.event('VIEW_REGION_CHECKED',view_id=identity,**view['localization'])

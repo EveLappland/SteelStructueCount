@@ -161,19 +161,32 @@ function renderViewLedger() {
     const data=draft.data,target=$('#stage-content');
     $('#approve').disabled=true;
     target.append(node('p','逐视图候选台账：尚未去重，数量不可作为最终总量。可编辑并保存；新的第三阶段去重尚未接入。'));
+    const overview=node('section'),currentSummary=node('section');
+    function summarySection(container,rows,label) {
+        const stats=LedgerTools.summarize(rows);container.replaceChildren(node('h3',label),
+            node('p',`${stats.profileCount} 种截面 · ${stats.quantity} 个构件段 · ${stats.unknownQuantity} 个缺少长度（未去重，待核对）`),
+            table(['钢材类型','单根长度 mm','数量'],stats.groups.map(g=>[g.spec,g.length_mm,g.member_cnt])));
+    }
+    function updateSummaries() {
+        summarySection(overview,data.view_members,'全部视图台账汇总（包含跨视图重复）');
+        if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
+    }
+    target.append(overview);
     target.append(table(['视图','识别状态','标签数','构件段数（未去重）'],data.view_analysis.map(a=>[
         data.views.find(v=>v.id===a.view_id)?.title||a.view_id,a.status,a.label_count,a.member_cnt])));
     const choices=data.views.filter(v=>v.kind!=='ISOMETRIC');
     const panel=node('section');
+    panel.addEventListener('input',updateSummaries);
     function show(id) {
         panel.replaceChildren();
         const view=data.views.find(v=>v.id===id);
         activeView=view;
+        updateSummaries();panel.append(currentSummary);
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${id}.jpg`,alt:view.title,style:'max-width:100%'}));
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
-            input(titles(r.view_tags),r.view_tags.join(','),v=>{r.view_tags=splitRefs(v);mark(r);}),
+            LedgerTools.tagEditor(document,r,data.views,()=>{mark(r);refreshJson();}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
             input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
             input('尺寸与切分依据',r.basis,v=>setField(r,'basis',v)),
@@ -184,4 +197,5 @@ function renderViewLedger() {
     }
     target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
     if(choices.length)show(choices[0].id);
+    else updateSummaries();
 }

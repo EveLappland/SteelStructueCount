@@ -45,3 +45,17 @@ class ViewLocatorTest(unittest.TestCase):
     def test_nonexistent_boundary_reference_stays_pending(self):
         page,views=self.fixture();views[0]['boundary_evidence_ids']=['invented']
         self.assertFalse(refine_view_regions(page,views)[0]['region_confirmed'])
+
+    def test_neighbour_axis_citation_is_rejected_not_crop_failure(self):
+        page,views=self.fixture()
+        page['texts'].append(item('inside-right','PROJECT/5',[.72,.2,.75,.22]))
+        views[0]['boundary_evidence_ids']=['inside-right']
+        result=refine_view_regions(page,views)
+        self.assertTrue(result[0]['region_confirmed'])
+        self.assertEqual(result[0]['boundary_evidence_ids'],[])
+        self.assertEqual(result[0]['localization']['rejected_boundary_evidence'][0]['owner_view'],'right')
+        self.assertLess(result[0]['bbox'][2],.5)
+
+    def test_unowned_outside_citation_still_blocks(self):
+        page,views=self.fixture();views[0]['boundary_evidence_ids']=['border']
+        self.assertFalse(refine_view_regions(page,views)[0]['region_confirmed'])

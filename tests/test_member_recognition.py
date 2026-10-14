@@ -30,10 +30,10 @@ class MemberRecognitionTests(unittest.TestCase):
         self.assertEqual(bundle['current_view_id'],'plan1')
         self.assertIn('OF SPLICE',recognition_prompt(bundle))
         self.assertIn('member_cnt',recognition_prompt(bundle))
-        self.assertIn('主要任务是看图片',recognition_prompt(bundle))
-        self.assertIn('全图轴线总跨尺寸',recognition_prompt(bundle))
-        self.assertIn('sqrt(3000²+4000²)=5000mm',recognition_prompt(bundle))
-        self.assertIn('不能根据规格名字判断',recognition_prompt(bundle))
+        # Users can edit the prompt; test assembly rather than frozen wording.
+        from pathlib import Path
+        guidance=(Path(__file__).parents[1]/'app/prompts/stage_two_members.md').read_text(encoding='utf-8')
+        self.assertTrue(recognition_prompt(bundle).startswith(guidance+'\n'))
 
     def test_vectors_remain_small_auxiliary_context(self):
         vectors=[{'id':f'v{i}','bbox':[.1,.1,.2,.2],'points':[[.1,.1],[.2,.2]],'style':{}}
