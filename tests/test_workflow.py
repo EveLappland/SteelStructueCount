@@ -121,7 +121,7 @@ class ApiWorkflowTest(unittest.TestCase):
                 import json
                 bundle=json.loads(prompt.split('输入包：\n',1)[1])
                 return {'members':[{'spec':'HEA240','view_tags':[v['tag'] for v in bundle['view_catalog']],
-                                    'member_cnt':1,'length_mm':6000,'basis':'明确端部，标注6000','issue':None}]}
+                                    'member_cnt':1,'length_mm':6000,'location':'A轴与B轴之间','issue':None}]}
             view_id='plan' if '-view01' in str(response_path) else 'elevation-A'
             selected=[o for o in data['observations'] if o['view_id']==view_id]
             return {'frame':data['frame'],'observations':selected,'axis_marks':[],'warnings':[]}
@@ -168,10 +168,12 @@ class ApiWorkflowTest(unittest.TestCase):
             self.assertTrue(model.called)
             self.assertTrue(all(call.args[5] is MemberResponse for call in model.call_args_list))
             self.assertTrue(all(call.args[3]['image_path'].endswith('_300dpi.png') for call in model.call_args_list))
-            self.assertTrue(all('native_evidence' not in call.args[2] for call in model.call_args_list))
+            self.assertTrue(all('native_evidence' in call.args[2] for call in model.call_args_list))
+            self.assertTrue(all('profile_catalog' in call.args[2] for call in model.call_args_list))
         stage_two=self.client.get(base+'/stages/2').json()
         self.assertEqual(stage_two['status'],'awaiting_review')
         self.assertEqual(len(stage_two['data']['view_members']),2)
+        self.assertTrue(all(r['location']=='A轴与B轴之间' and 'basis' not in r for r in stage_two['data']['view_members']))
         self.assertTrue(any(a.get('coverage_differences') for a in stage_two['data']['view_analysis']))
         self.assertEqual(self.client.get(base+'/views/'+image).content,original)
         retry=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision']})

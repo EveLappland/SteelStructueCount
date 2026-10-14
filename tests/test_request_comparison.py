@@ -21,7 +21,7 @@ class RequestComparisonTests(unittest.TestCase):
 
     def test_summary_retains_null_lengths_and_raw_specs(self):
         row = {'spec':'2LF-L90*8','view_tags':['EL.1'], 'member_cnt':2,
-               'length_mm':None,'basis':'长度未确认','issue':'标尺缺失'}
+               'length_mm':None,'location':'A轴与B轴之间','issue':'标尺缺失'}
         result = summarize(json.dumps({'members':[row,row]}))
         self.assertEqual(result['member_cnt'],4)
         self.assertEqual(result['unknown_length_rows'],2)

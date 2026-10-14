@@ -1,6 +1,5 @@
 """Compact per-view ledger. PDF positions only bind the image to native evidence."""
 import json
-import math
 import re
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from pydantic import Field, StrictInt
 from .domain import Contract
 from .geometry import section
 from .axis_catalog import build_axis_catalog
+from .native_pdf import view_context
 
 
 class RecognizedMember(Contract):
@@ -15,7 +15,7 @@ class RecognizedMember(Contract):
     view_tags: list[str] = Field(min_length=1)
     member_cnt: StrictInt = Field(ge=1, le=10000)
     length_mm: float | None = Field(gt=0)
-    basis: str = Field(min_length=1, max_length=4000)
+    location: str = Field(max_length=4000)
     issue: str | None = Field(max_length=4000)
 
 
@@ -49,11 +49,15 @@ def allowed_model_tags(bundle):
 
 
 def make_input(page, view, stage_one):
-    """Only confirmed names and axes travel with the image, never native geometry."""
+    """Pair the confirmed image with its catalogs and crop-scoped native evidence."""
     context_views=[view if v['id']==view['id'] else v for v in stage_one['views']]
     axes=stage_one.get('axis_catalog') or build_axis_catalog([page],context_views)
     return {
         'current_view_tag':view_tag(view),
+        'profile_catalog':list(stage_one.get('profile_catalog',[])),
+        'native_evidence':{'page_id':page['id'],'crop_bbox':list(view['bbox']),
+                           'coordinate_system':'normalized PDF page coordinates, not real-world millimetres',
+                           **view_context(page,view['bbox'])},
         'axis_catalog':{'axes':[{'name':a['name']} for a in axes['axes']],
                         'axis_count':axes['axis_count'],
                         'current_axes':axes['per_view'].get(view['id'],[])},
@@ -66,8 +70,8 @@ def make_input(page, view, stage_one):
 
 def recognition_prompt(bundle):
     guidance = (Path(__file__).parent/'prompts'/'stage_two_members.md').read_text(encoding='utf-8')
-    # Strict whitelist: old callers cannot accidentally send text/vector dumps.
-    compact={key:bundle[key] for key in ('current_view_tag','view_catalog','axis_catalog','image') if key in bundle}
+    # Only the view-scoped package built above is sent, not arbitrary caller fields.
+    compact={key:bundle[key] for key in ('current_view_tag','profile_catalog','view_catalog','axis_catalog','image','native_evidence') if key in bundle}
     return guidance + '\n输入包：\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
 
 
@@ -82,7 +86,10 @@ def validate_rows(rows, view, stage_one):
     profiles = {section(p)[0] for p in stage_one.get('profile_catalog', [])}
     result = []
     for index, raw in enumerate(rows, 1):
-        row = RecognizedMember.model_validate({k: raw[k] for k in RecognizedMember.model_fields}).model_dump()
+        # Saved ledgers may predate location. Do not pretend their old basis is
+        # an axis location; retain it separately and ask for a position on edit.
+        row = RecognizedMember.model_validate({k: raw.get(k,'') if k=='location' else raw[k]
+                                              for k in RecognizedMember.model_fields}).model_dump()
         issues = []
         tags=[]
         for tag in row['view_tags']:
@@ -101,16 +108,13 @@ def validate_rows(rows, view, stage_one):
             issues.append('引用的轴面未绑定到第一阶段的当前视图')
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')
-        formulas=re.findall(r'(?:sqrt|√)\s*\(\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\+\s*(\d+(?:\.\d+)?)\s*(?:²|\^2)\s*\)',row['basis'],re.I)
-        if formulas and row['length_mm'] is not None:
-            computed=[math.hypot(float(a),float(b)) for a,b in formulas]
-            if all(abs(row['length_mm']-value)>1 for value in computed):
-                issues.append('长度字段与依据中的勾股计算式不一致，需重新确认；不自动猜选跨度')
+        if not row['location']: issues.append('缺少构件位置说明，需补充核对')
         if row['issue']: issues.insert(0, row['issue'])
         result.append({**row, 'id': raw.get('id', f"{view['id']}-m{index:03d}"),
                        'source_view': view['id'], 'page_id': view['page_id'],
                        'evidence_ids':raw.get('evidence_ids',[]),
-                       'length_math_check':{'hypotenuse_mm':[round(math.hypot(float(a),float(b)),3) for a,b in formulas]},
+                       **({'legacy_basis':raw.get('legacy_basis',raw.get('basis'))}
+                          if raw.get('legacy_basis') or raw.get('basis') else {}),
                        'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review'})
     return result
 

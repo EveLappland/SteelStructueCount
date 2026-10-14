@@ -38,5 +38,5 @@ class AxisCatalogTests(unittest.TestCase):
         bundle=make_input(page,view,one)
         self.assertEqual(bundle['axis_catalog']['axis_count'],2)
         row={'spec':'HEA200','view_tags':['PLAN LEVEL 20','WEST-FRAME/12'],'member_cnt':1,
-             'length_mm':6000,'basis':'轴线12上的梁，跨6000','issue':None}
+             'length_mm':6000,'location':'轴线12上的梁','issue':None}
         self.assertEqual(validate_rows([row],view,{**one,'axis_catalog':catalog})[0]['checks'],[])

@@ -191,16 +191,18 @@ function renderViewLedger() {
         panel.append(node('p',`当前视图轴面数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
-        panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
+        panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','构件位置','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
             LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:'ELEVATION',title:a.name,fixed_label:a.name}))],()=>{mark(r);refreshJson();}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
             input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
-            input('尺寸与切分依据',r.basis,v=>setField(r,'basis',v)),
+            input('用平面或立面轴线说明位置',r.location||'',v=>setField(r,'location',v)),
             input('可留空',r.issue,v=>setField(r,'issue',v||null)),r.checks.join('；'),
             button('删除',()=>{data.view_members=data.view_members.filter(x=>x!==r);mark();show(id);},'secondary')
         ])));
-        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title],member_cnt:1,length_mm:null,basis:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
+        const legacy=data.view_members.filter(r=>r.source_view===id&&(r.legacy_basis||r.basis));
+        if(legacy.length){const history=node('details');history.append(node('summary','历史台账依据（保留原文）'),table(['规格','原有依据'],legacy.map(r=>[r.spec,r.legacy_basis||r.basis])));panel.append(history);}
+        panel.append(button('添加台账行',()=>{data.view_members.push({id:`${id}-manual-${Date.now()}`,source_view:id,page_id:view.page_id,spec:'',view_tags:[view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title],member_cnt:1,length_mm:null,location:'',issue:'人工补充，待核对',checks:[],review_status:'pending_review'});mark();show(id);}));
     }
     target.append(select('来源视图',choices[0]?.id,choices.map(v=>[v.id,v.title]),show),panel);
     if(choices.length)show(choices[0].id);

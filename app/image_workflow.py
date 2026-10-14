@@ -1,4 +1,4 @@
-"""Stage one prepares confirmed view images; stage two only interprets those images."""
+"""Stage one freezes images; stage two interprets them with view-scoped evidence."""
 import hashlib
 import json
 import struct
@@ -89,11 +89,16 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         image=image_path.read_bytes();width,height=struct.unpack('>II',image[16:24])
         bundle['image']={'width_px':width,'height_px':height,'dpi':300,'format':'PNG'}
         input_path=folder/f"{view['id']}_input.json";write_json(input_path,bundle)
-        emit(f"第二阶段识图：{view['title']}；使用第一阶段确认的高清图片与精简目录。")
+        context=bundle['native_evidence']
+        emit(f"第二阶段识图：{view['title']}；使用确认图片、规格/视图目录和当前视图文字/矢量证据。")
         audit.event('IMAGE_MEMBER_REQUEST',view_id=view['id'],image_file=view['image_file'],
                     image_sha256=hashlib.sha256(image).hexdigest(),width_px=width,height_px=height,dpi=300,
                     detail_files=view.get('detail_files',[]),
-                    input_file=str(input_path.relative_to(directory)),native_text_sent=False,vectors_sent=False)
+                    input_file=str(input_path.relative_to(directory)),native_text_sent=bool(context['texts']),vectors_sent=bool(context['vectors']),
+                    text_count=len(context['texts']),vector_count=len(context['vectors']),vector_total=context['vector_total'],
+                    vector_context_truncated=context['vector_context_truncated'])
+        if context['vector_context_truncated']:
+            result['warnings'].append(f"{view['title']} 矢量辅助证据只发送了 {len(context['vectors'])}/{context['vector_total']} 条；完整证据保存在 native 目录，不能据此判断构件缺失。")
         try:
             payload=model_call(client,model,recognition_prompt(bundle),
                 {**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,

@@ -10,7 +10,7 @@ class MemberRecognitionTests(unittest.TestCase):
                   {'id':'elA','kind':'ELEVATION','title':'ELEVATION A'},
                   {'id':'iso','kind':'ISOMETRIC','title':'ISOMETRIC'}]}
         self.row={'spec':'HEA240','view_tags':['elA','plan1'],'member_cnt':2,
-                  'length_mm':6000,'basis':'左、右侧各一根，尺寸6000，无拼接','issue':None}
+                  'length_mm':6000,'location':'左、右侧各一根，A轴与B轴之间','issue':None}
 
     def test_minimal_schema_and_strict_counts(self):
         self.assertEqual(set(MemberResponse.model_json_schema()['$defs']['RecognizedMember']['properties']),set(self.row))
@@ -19,6 +19,9 @@ class MemberRecognitionTests(unittest.TestCase):
         for length in (0,-10,float('nan'),float('inf')):
             with self.assertRaises(ValidationError):MemberResponse.model_validate({'members':[{**self.row,'length_mm':length}]})
         with self.assertRaises(ValidationError):MemberResponse.model_validate({'members':[{**self.row,'x':1}]})
+        old={k:v for k,v in self.row.items() if k!='location'}
+        with self.assertRaises(ValidationError):MemberResponse.model_validate({'members':[{**old,'basis':'旧依据'}]})
+        with self.assertRaises(ValidationError):MemberResponse.model_validate({'members':[{**self.row,'basis':'额外字段'}]})
 
     def test_pack_uses_stage_one_catalog_and_crop(self):
         page={'id':'p','file':'drawing.pdf','page':1,'width_pt':800,'height_pt':600,
@@ -26,17 +29,28 @@ class MemberRecognitionTests(unittest.TestCase):
                        {'id':'t2','text':'HEA300','bbox':[.6,.1,.7,.2]}], 'vectors':[]}
         bundle=make_input(page,self.view,self.one)
         self.assertEqual(bundle['current_view_tag'],self.view['title'])
-        self.assertNotIn('native_evidence',bundle)
+        self.assertEqual(bundle['profile_catalog'],self.one['profile_catalog'])
+        self.assertEqual([t['id'] for t in bundle['native_evidence']['texts']],['t1'])
+        self.assertEqual(bundle['native_evidence']['crop_bbox'],self.view['bbox'])
         self.assertNotIn('profile_labels',bundle)
         from pathlib import Path
         guidance=(Path(__file__).parents[1]/'app/prompts/stage_two_members.md').read_text(encoding='utf-8')
         self.assertTrue(recognition_prompt(bundle).startswith(guidance+'\n'))
 
-    def test_native_evidence_cannot_leak_into_prompt(self):
-        text=recognition_prompt({'current_view_tag':'PLAN','view_catalog':[],
-                                'axis_catalog':{},'native_evidence':{'vectors':['VECTOR_SECRET']},
-                                'texts':['TEXT_SECRET'],'profile_labels':['LABEL_SECRET']})
-        for forbidden in ('VECTOR_SECRET','TEXT_SECRET','LABEL_SECRET','native_evidence'):
+    def test_prompt_contains_only_current_view_evidence_and_catalogs(self):
+        page={'id':'p','texts':[{'id':'inside','text':'HEA240','bbox':[.1,.1,.2,.2]},
+                              {'id':'outside','text':'OUTSIDE_SECRET','bbox':[.6,.1,.7,.2]}],
+              'vectors':[{'id':'line-in','bbox':[.1,.1,.2,.2],'points':[[.1,.1],[.2,.2]],'style':{'width':.5,'dashes':'[] 0'}},
+                         {'id':'line-out','bbox':[.7,.1,.8,.2],'points':[[.7,.1],[.8,.2]],'style':{}}]}
+        bundle=make_input(page,self.view,self.one)
+        bundle.update(texts=['TEXT_SECRET'],profile_labels=['LABEL_SECRET'])
+        text=recognition_prompt(bundle)
+        import json
+        context=json.loads(text.split('输入包：\n',1)[1])
+        self.assertEqual(context['profile_catalog'],self.one['profile_catalog'])
+        self.assertEqual([v[0] for v in context['native_evidence']['vectors']],['line-in'])
+        self.assertIn('HEA240',text)
+        for forbidden in ('OUTSIDE_SECRET','line-out','TEXT_SECRET','LABEL_SECRET'):
             self.assertNotIn(forbidden,text)
 
     def test_at_suffix_tags_follow_catalog_identity(self):
@@ -46,6 +60,15 @@ class MemberRecognitionTests(unittest.TestCase):
         tags = allowed_model_tags({'view_catalog':[{'tag':self.view['title'],'kind':'PLAN'}],
                                    'axis_catalog':{'current_axes':['GRID-Q/6']}})
         self.assertEqual(set(tags), {self.view['title'], 'EL.1.000(TOS)', 'GRID-Q/6'})
+
+    def test_vector_context_reports_truncation_without_losing_total(self):
+        vectors=[{'id':f'v{i}','bbox':[.1,.1,.2,.2],
+                  'points':[[.1,.1],[.2,.2]],'style':{}} for i in range(1601)]
+        bundle=make_input({'id':'p','texts':[],'vectors':vectors},self.view,self.one)
+        evidence=bundle['native_evidence']
+        self.assertEqual(evidence['vector_total'],1601)
+        self.assertEqual(len(evidence['vectors']),1600)
+        self.assertTrue(evidence['vector_context_truncated'])
 
     def test_colliding_short_tags_are_not_guessed(self):
         one = {**self.one, 'views':self.one['views'] + [
@@ -64,8 +87,8 @@ class MemberRecognitionTests(unittest.TestCase):
         self.assertEqual(a['checks'],[])
 
     def test_splices_separate_lengths_and_assembly_not_expanded(self):
-        rows=validate_rows([{**self.row,'member_cnt':1,'length_mm':3000,'basis':'6000中部OF SPLICE，6000/2'},
-                            {**self.row,'member_cnt':1,'length_mm':3000,'basis':'拼接另一段6000/2'},
+        rows=validate_rows([{**self.row,'member_cnt':1,'length_mm':3000,'location':'A轴至中部OF SPLICE'},
+                            {**self.row,'member_cnt':1,'length_mm':3000,'location':'中部OF SPLICE至B轴'},
                             {**self.row,'spec':'2LF-L100*10','member_cnt':1}],self.view,self.one)
         self.assertEqual(len(rows),3)
         self.assertEqual(rows[-1]['member_cnt'],1)
@@ -85,15 +108,28 @@ class MemberRecognitionTests(unittest.TestCase):
         row=validate_rows([self.row],self.view,self.one)[0]
         with self.assertRaises(ValueError):validate_ledger({**self.one,'view_members':[row,row]})
 
-    def test_diagonal_formula_must_agree_with_length(self):
-        row={**self.row,'basis':'端点水平3000、竖向4000，sqrt(3000²+4000²)=5000mm','length_mm':5000}
+    def test_diagonal_location_does_not_require_a_formula(self):
+        row={**self.row,'location':'A-B轴之间、1-2轴间的斜撑','length_mm':5000}
         good=validate_rows([row],self.view,self.one)[0]
         self.assertEqual(good['checks'],[])
-        self.assertEqual(good['length_math_check']['hypotenuse_mm'],[5000])
-        bad=validate_rows([{**row,'length_mm':8742}],self.view,self.one)[0]
-        self.assertTrue(any('勾股计算式不一致' in issue for issue in bad['checks']))
-        # Keep the original model value for audit, do not silently choose endpoints.
-        self.assertEqual(bad['length_mm'],8742)
+        self.assertEqual(good['length_mm'],5000)
+        self.assertNotIn('length_math_check',good)
+        unknown=validate_rows([{**row,'length_mm':None,'issue':'斜撑分跨尺寸无法确认'}],self.view,self.one)[0]
+        self.assertIsNone(unknown['length_mm'])
+        self.assertIn('斜撑分跨尺寸无法确认',unknown['checks'])
+
+    def test_old_basis_is_retained_without_inventing_a_location(self):
+        old={k:v for k,v in self.row.items() if k!='location'}
+        old['basis']='6000中部拼接，长度6000/2'
+        saved=validate_ledger({**self.one,'view_members':[{**old,'id':'old','source_view':self.view['id']}]})
+        row=saved['view_members'][0]
+        self.assertEqual(row['legacy_basis'],old['basis'])
+        self.assertEqual(row['location'],'')
+        self.assertTrue(any('位置说明' in check for check in row['checks']))
+        row['location']='A轴至拼接点'
+        edited=validate_ledger(saved)['view_members'][0]
+        self.assertEqual(edited['legacy_basis'],old['basis'])
+        self.assertEqual(edited['checks'],[])
 
     def test_user_bottom_beam_has_plan_and_alignment_names(self):
         plan={**self.view,'title':'PLAN AT EL.107.500(TOS)'}
@@ -101,7 +137,7 @@ class MemberRecognitionTests(unittest.TestCase):
                    'fixed_label':'302003-PR001I/1'}
         one={'views':[plan,elevation],'profile_catalog':['HEA260']}
         raw={**self.row,'spec':'HEA260','member_cnt':1,'view_tags':[plan['title'],elevation['fixed_label']],
-             'basis':'最下面的梁位于1轴线；长度6000由用户确认'}
+             'location':'最下面的梁位于1轴线'}
         result=validate_rows([raw],plan,one)[0]
         self.assertEqual(result['view_tags'],['302003-PR001I/1','PLAN AT EL.107.500(TOS)'])
         self.assertEqual(result['source_view'],'plan1')
