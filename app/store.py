@@ -191,6 +191,8 @@ class JobStore:
             if job['active_stage'] != (4 if export_retry else stage):
                 raise StoreError('只能重试当前阶段。')
             if not export_retry:
+                self._history(db,job_id,stage,row['revision'],'retry',
+                              '请求重新计算；AI 阶段使用 max 思考强度。',json.loads(row['data']))
                 db.execute('UPDATE stages SET revision=revision+1,status=? WHERE job_id=? AND stage=?',
                            ('queued', job_id, stage))
             db.execute("UPDATE jobs SET result='{}' WHERE id=?", (job_id,))

@@ -11,7 +11,7 @@ from .axis_catalog import build_axis_catalog
 from .domain import StageTwo
 from .drawing_input import render_png,write_view_image
 from .llm_runner import _api_settings
-from .member_recognition import make_input,recognition_prompt,MemberResponse,validate_rows,validate_ledger
+from .member_recognition import make_input,recognition_prompt,MemberResponse,validate_rows,validate_ledger,allowed_model_tags
 from .native_pdf import write_json,inside
 from .discovery_inventory import labels
 from .geometry import section
@@ -98,8 +98,9 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             payload=model_call(client,model,recognition_prompt(bundle),
                 {**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
                  'detail_paths':[str(directory/'views'/Path(name).name) for name in view.get('detail_files',[])],
-                 'allowed_view_tags':[v['tag'] for v in bundle['view_catalog']]+bundle['axis_catalog']['current_axes']},
-                folder/f"{view['id']}_members.json",MemberResponse,reuse_saved=reuse_saved,emit=emit,audit=audit)
+                 'allowed_view_tags':allowed_model_tags(bundle)},
+                folder/f"{view['id']}_members.json",MemberResponse,reuse_saved=reuse_saved,emit=emit,audit=audit,
+                reasoning_effort=settings.get('reasoning_effort','high'))
             rows=validate_rows(payload['members'],view,one);result['view_members'].extend(rows)
             count=sum(r['member_cnt'] for r in rows)
             # Native labels are only a local check; never part of the AI request.

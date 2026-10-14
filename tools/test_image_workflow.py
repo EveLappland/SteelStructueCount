@@ -21,7 +21,9 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-job',required=True)
     parser.add_argument('--reuse-prepared',action='store_true',help='复用源任务已定位的第一阶段目录，补齐同视图放大图，仅重新识别构件')
+    parser.add_argument('--reasoning-effort',choices=('high','max'),help='默认首次 high，复用目录重新识别 max')
     args=parser.parse_args()
+    effort=args.reasoning_effort or ('max' if args.reuse_prepared else 'high')
     if len(args.source_job)!=32 or any(c not in '0123456789abcdef' for c in args.source_job):parser.error('无效任务ID')
     source=ROOT/'data/jobs'/args.source_job
     if not (source/'uploads').is_dir():parser.error('找不到源任务输入')
@@ -43,7 +45,7 @@ def main():
                 for name in [view['image_file'],*view.get('detail_files',[])]:
                     shutil.copyfile(source/'views'/Path(name).name,folder/'views'/Path(name).name)
             freeze_images(folder,seed);store.complete_stage(identity,1,seed)
-        else:execute(store,identity,1,folder,{})
+        else:execute(store,identity,1,folder,{'reasoning_effort':effort})
     except Exception as exc:
         store.fail(identity,1,str(exc));raise
     one=store.stage(identity,1)
@@ -52,7 +54,7 @@ def main():
     # This explicit approval verifies mechanics, not engineering quantities.
     store.approve(identity,1,one['revision'],True,reason='[FLOW_VERIFICATION] 自动边界检查通过，验证两阶段衔接；不是工程数量确认。')
     store.claim(identity,2)
-    try:execute(store,identity,2,folder,{})
+    try:execute(store,identity,2,folder,{'reasoning_effort':effort})
     except Exception as exc:
         store.fail(identity,2,str(exc));raise
     two=store.stage(identity,2)['data'];results=[]
@@ -64,7 +66,7 @@ def main():
                         'issue_rows':sum(bool(r['checks']) for r in rows),
                         'image_file':view['image_file'],
                         'image_sha256':hashlib.sha256((folder/'views'/view['image_file']).read_bytes()).hexdigest()})
-    report={'job_id':identity,'source_job':args.source_job,'workflow':'image_first',
+    report={'job_id':identity,'source_job':args.source_job,'workflow':'image_first','reasoning_effort':effort,
             'views':results,'warnings':two['warnings'],'engineering_verified':False,
             'note':'新任务验证API与衔接；无人工全图台账基准，不宣称数量与长度正确。'}
     write_json(folder/'image_workflow_report.json',report)

@@ -66,9 +66,15 @@ def boundary_review_prompt(view,observations,context):
         f"Native evidence: {json.dumps(context,ensure_ascii=False,separators=(',',':'))}")
 
 
-def request_options(model):
-    if model in ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp'):
-        return {'reasoning_effort':'low','max_tokens':24000}
+DEEPSEEK_VISION_MODELS = ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp')
+
+
+def request_options(model, effort='high'):
+    if model in DEEPSEEK_VISION_MODELS:
+        if effort not in ('high','max'):
+            raise ValueError('图纸识别仅使用 high 或 max 思考强度。')
+        return {'reasoning_effort':effort,'max_tokens':131072 if effort=='max' else 65536,
+                'extra_body':{'thinking':{'type':'enabled'}}}
     return {}
 
 
@@ -195,7 +201,7 @@ def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
     return sorted(set(by_id)-seen)
 
 
-def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None,validation_retry=False):
+def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None,validation_retry=False,reasoning_effort='high'):
     if contract in (ViewResponse,AnalysisResponse):
         guidance=(Path(__file__).parent/'prompts'/'stage_one.md').read_text(encoding='utf-8')
         if not prompt.startswith(guidance+'\n\n'):
@@ -205,7 +211,10 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
         schema_data['$defs']['RecognizedMember']['properties']['view_tags']['items']={
             'type':'string','enum':list(dict.fromkeys(entry['allowed_view_tags']))}
     schema = json.dumps(schema_data, ensure_ascii=False)
-    options={**request_options(model),**(options_override or {})}
+    options={**request_options(model, reasoning_effort),**(options_override or {})}
+    if model in DEEPSEEK_VISION_MODELS and (options.get('reasoning_effort') not in ('high','max') or
+            options.get('extra_body',{}).get('thinking',{}).get('type')!='enabled'):
+        raise ValueError('图纸识别不能降级为 low 或关闭思考。')
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
                                  'page':entry['page'],'crop':entry.get('crop'),'options':options,
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
@@ -226,6 +235,9 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                 if saved_metadata.is_file():
                     if json.loads(saved_metadata.read_text(encoding='utf-8')).get('signature')!=signature:
                         continue
+                elif model in DEEPSEEK_VISION_MODELS:
+                    # Unsigned legacy output cannot prove its thinking mode/effort.
+                    continue
                 elif Path(entry['source_path']).stat().st_mtime > saved.stat().st_mtime:
                     # Legacy responses have no request signature; only adopt unchanged uploads.
                     continue
@@ -286,14 +298,15 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                          usage=raw.get('usage'),finish_reason=raw.get('choices',[{}])[0].get('finish_reason') if raw.get('choices') else None)
     finish=raw.get('choices',[{}])[0].get('finish_reason') if raw.get('choices') else None
     if finish=='length':
-        if model in ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp') and not options_override:
-            truncated=response_path.with_suffix('.truncated.json')
-            shutil.copyfile(response_path,truncated)
+        truncated=response_path.with_suffix('.truncated.json')
+        if truncated.exists():truncated=response_path.with_suffix('.max.truncated.json')
+        shutil.copyfile(response_path,truncated)
+        if model in DEEPSEEK_VISION_MODELS and options.get('reasoning_effort')!='max':
             if audit:audit.event('MODEL_TRUNCATION_RETRY',response_file=relative,
                 preserved_file=str(truncated.relative_to(audit.directory)),
-                reason='输出额度被思考内容耗尽，保留截断响应，仅重试本次请求并关闭 thinking。')
+                reason='保留截断响应；升至 max 并增加输出额度后仅重试一次，保持思考开启。')
             return model_call(client,model,prompt,entry,response_path,contract,emit=emit,audit=audit,
-                              options_override={'extra_body':{'thinking':{'type':'disabled'}}},validation_retry=validation_retry)
+                              reasoning_effort='max',validation_retry=validation_retry)
         raise ValueError('模型输出被 token 限额截断；原始响应已保存，不能使用部分 JSON。')
     try:
         result=parse_model_content(response_content(raw),contract,entry,audit)
@@ -306,7 +319,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
             return model_call(client,model,prompt+'\n上次响应格式错误：'+str(exc)+
                               '\n仅返回一个members数组。所有JSON键只出现一次，禁止重复键；不得用空数组覆盖结果。',
                               entry,response_path,contract,emit=emit,audit=audit,options_override=options_override,
-                              validation_retry=True)
+                              validation_retry=True,reasoning_effort='max')
         raise
     if audit:audit.event('MODEL_VALIDATION_PASSED',response_file=relative,contract=contract.__name__)
     return result
@@ -443,7 +456,8 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
         pages=load_native(directory)
     client=OpenAI(base_url=base_url,api_key=key,timeout=600,max_retries=1)
     if audit is None:audit=AuditLog(directory,stage=2,secrets=(key,))
-    call=partial(model_call,reuse_saved=reuse_saved,emit=emit,audit=audit)
+    call=partial(model_call,reuse_saved=reuse_saved,emit=emit,audit=audit,
+                 reasoning_effort=settings.get('reasoning_effort','high'))
     native_evidence=evidence_index(pages,(seed or {}).get('manual_evidence',[]))
     aliases=evidence_aliases(native_evidence)
     views,observations,warnings=[],[],[]
@@ -566,8 +580,7 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
                         review=call(client,model,
                             boundary_review_prompt(view,unresolved,context),
                             {**entry,'id':view['id'],'crop':view['bbox']},
-                            response_folder/f"{view['id']}_boundaries.json",BoundaryResponse,
-                            options_override={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None)
+                            response_folder/f"{view['id']}_boundaries.json",BoundaryResponse)
                         absent=apply_boundary_reviews(unresolved,review,native_evidence,aliases,audit)
                         analysis['warnings'].extend(review['warnings'])
                         if absent:analysis['warnings'].append('端部复核缺少观察：'+', '.join(absent))
@@ -713,8 +726,14 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
 
 def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audit=None):
     audit=audit or AuditLog(directory,stage=stage,secrets=(settings.get('api_key'),os.getenv('LLM_API_KEY')))
-    audit.event('STAGE_STARTED',revision=store.stage(job_id,min(stage,3))['revision'],reuse_saved=reuse_saved)
+    state=store.stage(job_id,min(stage,3))
+    recalculation=any(h['action'] in ('retry','generated','retry_proposal') for h in state.get('history',[]))
+    effort='max' if recalculation else settings.get('reasoning_effort','high')
+    settings={**settings,'reasoning_effort':effort}
+    audit.event('STAGE_STARTED',revision=state['revision'],reuse_saved=reuse_saved,
+                recalculation=recalculation,reasoning_effort=effort)
     emit=lambda message:store.progress(job_id,message)
+    if stage in (1,2):emit(f'AI 思考强度：{effort}。'+('重新计算，使用更高档位。' if recalculation else ''))
     if stage==1:
         from .image_workflow import prepare_catalog
         result=prepare_catalog(directory,settings,emit,audit,reuse_saved=reuse_saved)

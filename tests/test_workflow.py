@@ -83,6 +83,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(reopened.stage('job',1)['status'],'approved')
         self.assertEqual(reopened.retry('job',2,1),2)
         self.assertEqual(reopened.stage('job',2)['revision'],2)
+        self.assertTrue(any(h['action']=='retry' for h in JobStore(self.store.path).stage('job',2)['history']))
 
     def test_retry_never_overwrites_manual_draft(self):
         self.store.edit('job',1,1,{'draft':'human'},'manual correction')
@@ -149,6 +150,7 @@ class ApiWorkflowTest(unittest.TestCase):
             self.app.state.worker(identity,1)
             self.assertTrue(model.called)
             self.assertTrue(all(call.args[5] is ViewResponse for call in model.call_args_list))
+            self.assertTrue(all(call.kwargs['reasoning_effort']=='high' for call in model.call_args_list))
         stage=self.client.get(base+'/stages/1').json()
         self.assertEqual(stage['status'],'awaiting_review')
         self.assertEqual(stage['data']['workflow'],'image_first')
@@ -172,6 +174,13 @@ class ApiWorkflowTest(unittest.TestCase):
         self.assertEqual(len(stage_two['data']['view_members']),2)
         self.assertTrue(any(a.get('coverage_differences') for a in stage_two['data']['view_analysis']))
         self.assertEqual(self.client.get(base+'/views/'+image).content,original)
+        retry=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision']})
+        self.assertEqual(retry.status_code,200,retry.text)
+        with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
+            self.app.state.worker(identity,2)
+            self.assertTrue(model.called)
+            self.assertTrue(all(call.kwargs['reasoning_effort']=='max' for call in model.call_args_list))
+        stage_two=self.client.get(base+'/stages/2').json()
         edited=stage_two['data'];edited['view_members'][0]['length_mm']=5000
         edit=self.client.patch(base+'/stages/2',json={'revision':stage_two['revision'],'data':edited,'reason':'尺寸人工修正'})
         self.assertEqual(edit.status_code,200,edit.text)
@@ -316,7 +325,10 @@ class NativePdfTest(unittest.TestCase):
             self.assertEqual(actual_prompt.count('第一阶段已由程序提取原生文字'),1)
             self.assertTrue(output.with_suffix('.truncated.json').exists())
             self.assertEqual(client.chat.completions.create.call_count,2)
-            self.assertEqual(client.chat.completions.create.call_args.kwargs['extra_body']['thinking']['type'],'disabled')
+            options=client.chat.completions.create.call_args.kwargs
+            self.assertEqual(options['extra_body']['thinking']['type'],'enabled')
+            self.assertEqual(options['reasoning_effort'],'max')
+            self.assertEqual(options['max_tokens'],131072)
 
     def test_boundary_review_requires_explanation_and_existing_evidence(self):
         schema=model_schema(BoundaryResponse)
@@ -341,7 +353,28 @@ class NativePdfTest(unittest.TestCase):
         schema=model_schema(AnalysisResponse)
         self.assertNotIn('view_id',schema['$defs']['Observation']['properties'])
         self.assertEqual(request_options('test'),{})
-        self.assertEqual(request_options('deepseek-flash')['reasoning_effort'],'low')
+        self.assertEqual(request_options('deepseek-flash')['reasoning_effort'],'high')
+        self.assertEqual(request_options('deepseek-flash')['max_tokens'],65536)
+        self.assertEqual(request_options('deepseek-flash','max')['reasoning_effort'],'max')
+        with self.assertRaises(ValueError):request_options('deepseek-flash','low')
+
+    def test_max_truncation_fails_without_disabling_thinking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'drawing.pdf';path.write_bytes(pdf_bytes())
+            client=MagicMock();client.base_url='https://example.test'
+            truncated=ChatCompletion(id='cut',created=0,model='deepseek-flash',object='chat.completion',
+                choices=[{'index':0,'finish_reason':'length','message':{'role':'assistant','content':'{"views":['}}])
+            client.chat.completions.create.return_value=truncated
+            output=Path(tmp)/'raw.json'
+            with self.assertRaisesRegex(ValueError,'截断'):
+                model_call(client,'deepseek-flash','test',{'id':'p','source_path':str(path),'page':1},output,ViewResponse)
+            self.assertEqual(client.chat.completions.create.call_count,2)
+            self.assertTrue(output.with_suffix('.truncated.json').exists())
+            self.assertTrue(output.with_suffix('.max.truncated.json').exists())
+            efforts=[call.kwargs['reasoning_effort'] for call in client.chat.completions.create.call_args_list]
+            self.assertEqual(efforts,['high','max'])
+            self.assertTrue(all(call.kwargs['extra_body']['thinking']['type']=='enabled'
+                                for call in client.chat.completions.create.call_args_list))
 
     def test_only_unique_vector_aliases_are_repaired(self):
         evidence={
@@ -411,6 +444,21 @@ class NativePdfTest(unittest.TestCase):
             self.assertEqual([t['kind'] for t in page['titles']],['PLAN','ELEVATION'])
             self.assertTrue(page['vectors'])
             self.assertTrue(page['vectors'][0]['points'])
+
+    def test_max_resume_cannot_reuse_unsigned_deepseek_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);upload=root/'drawing.pdf';upload.write_bytes(pdf_bytes())
+            saved=root/'responses/attempt-old/page_views.json';saved.parent.mkdir(parents=True)
+            raw=ChatCompletion(id='saved',created=0,model='deepseek-flash',object='chat.completion',
+                choices=[{'index':0,'finish_reason':'stop','message':{'role':'assistant',
+                          'content':json.dumps({'views':prepare_mock_data()['views']})}}])
+            saved.write_text(raw.model_dump_json(),encoding='utf-8')
+            client=MagicMock();client.base_url='https://example.test'
+            client.chat.completions.create.side_effect=RuntimeError('new max request required')
+            with self.assertRaisesRegex(RuntimeError,'new max request required'):
+                model_call(client,'deepseek-flash','same prompt',{'id':'page','source_path':str(upload),'page':1},
+                           root/'responses/attempt-new/page_views.json',ViewResponse,reuse_saved=True,reasoning_effort='max')
+            self.assertEqual(client.chat.completions.create.call_args.kwargs['reasoning_effort'],'max')
 
     def test_scan_like_pdf_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -30,6 +30,24 @@ def view_tag(view):
     return view['title']
 
 
+def tag_aliases(view):
+    """Accept the user's AT-suffix spelling, retaining catalog identity locally."""
+    aliases = {value for value in (view.get('id'), view.get('title'), view_tag(view)) if value}
+    if view['kind'] == 'PLAN':
+        match = re.search(r'\bAT\s+(.+)$', view['title'], re.I)
+        if match:
+            aliases.add(match[1].strip())
+    return aliases
+
+
+def allowed_model_tags(bundle):
+    """Accept full titles and AT suffixes; local validation flags name collisions."""
+    tags = set(bundle['axis_catalog']['current_axes'])
+    for view in bundle['view_catalog']:
+        tags.update(tag_aliases({'title': view['tag'], 'kind': view['kind']}))
+    return sorted(tags)
+
+
 def make_input(page, view, stage_one):
     """Only confirmed names and axes travel with the image, never native geometry."""
     context_views=[view if v['id']==view['id'] else v for v in stage_one['views']]
@@ -58,7 +76,7 @@ def validate_rows(rows, view, stage_one):
     allowed = {view_tag(v) for v in catalog}|{a['name'] for a in stage_one.get('axis_catalog',{}).get('axes',[])}
     aliases={}
     for v in catalog:
-        for alias in (v['id'],v['title'],view_tag(v)):
+        for alias in tag_aliases(v):
             aliases.setdefault(alias,set()).add(view_tag(v))
     source=next((v for v in catalog if v['id']==view['id']),view)
     profiles = {section(p)[0] for p in stage_one.get('profile_catalog', [])}

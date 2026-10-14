@@ -12,7 +12,7 @@ from openai import OpenAI
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from app.pipeline import load_native,model_call
-from app.member_recognition import MemberResponse,make_input,recognition_prompt,validate_rows
+from app.member_recognition import MemberResponse,make_input,recognition_prompt,validate_rows,allowed_model_tags
 from app.drawing_input import render_png
 from app.native_pdf import write_json
 from app.native_pdf import inside
@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--job-id',required=True)
     parser.add_argument('--view-title',required=True)
     parser.add_argument('--regions',type=Path,help='已核对的视图定位 report.json，按标题读取 final_bbox')
+    parser.add_argument('--reasoning-effort',choices=('high','max'),default='high',help='首次 high，复算建议 max')
     args=parser.parse_args()
     if len(args.job_id)!=32 or any(c not in '0123456789abcdef' for c in args.job_id):
         parser.error('job-id 必须是32位十六进制任务ID')
@@ -67,15 +68,15 @@ def main():
                        recognition_prompt(bundle),{**entry,'id':view['id'],'crop':view['bbox'],'image_dpi':300,
                            'image_path':str(output/'view_300dpi.png'),
                            'detail_paths':[str(folder/'views'/Path(name).name) for name in view.get('detail_files',[])],
-                           'allowed_view_tags':[v['tag'] for v in bundle['view_catalog']]+bundle['axis_catalog']['current_axes']},
+                           'allowed_view_tags':allowed_model_tags(bundle)},
                        output/'responses/attempt-live/members.json',MemberResponse,
-                       emit=lambda text:print(text,flush=True),audit=audit)
+                       emit=lambda text:print(text,flush=True),audit=audit,reasoning_effort=args.reasoning_effort)
     axes=one.get('axis_catalog') or build_axis_catalog([page],[view if v['id']==view['id'] else v for v in one['views']])
     rows=validate_rows(payload['members'],view,{**one,'axis_catalog':axes})
     report={'job_id':args.job_id,'stage_one_revision':record[1],'view_id':view['id'],'title':view['title'],
             'members':rows,'row_count':len(rows),'member_cnt':sum(r['member_cnt'] for r in rows),
             'label_count':sum(sum(1 for _ in labels(t['text'])) for t in page['texts'] if inside(t,view['bbox'])),
-            'model':model,'deduplicated':False,
+            'model':model,'reasoning_effort':args.reasoning_effort,'deduplicated':False,
             'unknown_length_rows':sum(r['length_mm'] is None for r in rows),
             'issue_rows':sum(bool(r['issue']) for r in rows),
             'note':'结构校验与API连通测试，尚未人工确认识别准确性；不修改原任务。'}

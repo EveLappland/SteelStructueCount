@@ -81,7 +81,6 @@ def main():
         raise ValueError('PDF原生证据已经改变，不能复用原AI定位框。')
     write_json(args.output/'native.json',page)
     responses=args.output/'responses'/f'attempt-{uuid.uuid4().hex}'
-    options={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None
     if args.reuse_proposals:
         proposals={'views':json.loads((args.output/'ai_proposals.json').read_text(encoding='utf-8'))}
         audit.event('LOCALIZATION_PROPOSALS_REUSED',reason='程序扩边规则变更，复用同一PDF的原AI框，重新复核裁切。')
@@ -90,7 +89,7 @@ def main():
         try:
             proposals=model_call(client,model,prompt,
                 {**entry,'image_max_dimension':3600},responses/'views.json',ViewResponse,audit=audit,
-                emit=lambda line:print(line,flush=True),options_override=options)
+                emit=lambda line:print(line,flush=True))
         except (json.JSONDecodeError,ValidationError) as error:
             audit.event('LOCALIZATION_FORMAT_RETRY',error=str(error),
                         reason='原响应保留；只重试一次格式或契约错误，不检查生成图片。')
@@ -98,7 +97,7 @@ def main():
                 '\nReturn valid JSON exactly matching the schema. Use normal JSON numbers (0.75, never 00.75). '
                 'Do not add undeclared fields such as structure_bbox_note. Return concise region metadata only; omit axis_marks.',
                 {**entry,'image_max_dimension':3600},responses/'views_format_retry.json',ViewResponse,audit=audit,
-                emit=lambda line:print(line,flush=True),options_override=options)
+                emit=lambda line:print(line,flush=True),reasoning_effort='max')
     native=evidence_index([page])
     missing=repair_model_evidence(proposals,native,evidence_aliases(native),audit)
     original=proposals['views']
@@ -125,7 +124,7 @@ def main():
             f"Expected title: {view['title']}\nPage crop: {view['bbox']}\n"
             f"Positioned native annotations: {json.dumps([{'id':t['id'],'text':t['text'],'bbox':t['bbox']} for t in page['texts'] if t['id'] in view['localization']['included_text_ids']],ensure_ascii=False)}",
             {**entry,'crop':view['bbox'],'image_max_dimension':4000},responses/(view['id']+'_crop_check.json'),
-            CropCheck,audit=audit,options_override=options,emit=lambda line:print(line,flush=True))
+            CropCheck,audit=audit,emit=lambda line:print(line,flush=True))
         # Native coverage and contamination are independent of the vision model's
         # self-review. Keep disagreement explicit rather than retrying until yes.
         ai_passed=None if verify is None else verify['complete'] and not verify['contains_other_view']

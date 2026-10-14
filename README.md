@@ -17,7 +17,7 @@ Copy-Item .env.example .env
 
 第一阶段定位视图和第二阶段识图均需要视觉 API。在 `.env` 填写 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，或在网页临时填写。模型需支持图片输入以及 `response_format: json_object`。网页提供的 Key 不写入 SQLite、任务文件或导出包，仅在内存中保留至第二阶段结束，重启/第二阶段重试需重新填写或使用 `.env`。
 
-DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明：https://api-docs.deepseek.com/guides/vision/ 。项目对该模型使用 `reasoning_effort=low` 与 24000 的输出 token 上限，并在日志记录这些参数。`deepseek-v4-pro` 不在该官方视觉支持列表；旧 Pro 响应保留用于诊断，不应用作视觉验收基准。
+DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明：https://api-docs.deepseek.com/guides/vision/ 。首次计算默认 `reasoning_effort=high`，点击“重试/重新计算”使用 `max`，两者均显式开启 thinking；输出 token 上限分别为 65536、131072，包含思考与最终回答。实际发送参数保存在任务日志中。重算请求会留下历史记录，重启后仍使用 `max`；旧 low 响应因请求签名不同不会复用。`xhigh` 在该 API 映射为 high，更高档应使用 max，见 https://api-docs.deepseek.com/guides/thinking_mode/ 。`deepseek-v4-pro` 不在该官方视觉支持列表；旧 Pro 响应保留用于诊断，不应用作视觉验收基准。
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8120
@@ -34,6 +34,8 @@ DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明�
 ```
 
 更换任务和视图标题即可测试其他图纸；尚未定位的目录需提供对应裁切测试的报告。单元测试不调用 API：` .\.venv\Scripts\python.exe -m unittest discover -s tests -q`。
+
+手动复算可在以上命令后追加 `--reasoning-effort max`。`tools/test_image_workflow.py --reuse-prepared` 默认使用 max。只对照原文提示词与单张已保存 PNG（不修改任务）可运行 `tools/compare_member_requests.py --job-id <任务ID> --view-title "<标题>"`；最小请求不指定思考参数，遵循服务端默认，应用封装请求使用项目默认 high。每次对照固定提示词与图片哈希，原始响应保存在 `tmp/request_comparison`；不能把格式通过或单次结果差异当作准确性验收。
 
 1. **视图、轴线和高清裁切**：原生提取后调用 AI 定位每页的独立视图，程序核对边界、排除邻图错引，提取并绑定各视图轴线。立面所在轴面与图中显示的轴线分开保存，名称来自图纸，不写死项目轴号。网页展示 300 DPI 裁切、标题、轴面与图示轴线，可修正区域和名称，核对后确认。长图在本阶段生成重叠的局部放大图，供模型读清细节。
 2. **纯图片构件识别**：只读取第一阶段冻结的全图及同视图局部图，使用 `app/prompts/stage_two_members.md` 原文和已确认的视图/轴线名称目录，返回 spec、view_tags、member_cnt、length_mm、basis、issue 六字段。不发送原生文字、标签位置、尺寸文字、矢量或全局坐标；不重新定位或裁切。服务端核对目录名称、字段格式、勾股算式与长度一致性，并在本地比较标签数量，不自动修正模型判断。
@@ -121,7 +123,7 @@ SQLite 位于 `data/jobs_v2.sqlite3`，存储任务、阶段、版本、历史�
 .\.venv\Scripts\python.exe tools\review_task_boundaries.py --job-id <任务ID>
 ```
 
-加 `--repair-empty-views` 时只恢复没有观察的平面/立面，再复核其端部；可加 `--view-id` 限定一个视图。原始提示词、截断响应和恢复响应分别保留。DeepSeek Flash 输出出现 `finish_reason=length` 时，程序保留 `.truncated.json` 并仅重试该请求一次，关闭 thinking 为 JSON 留出输出额度；仍截断则失败，不采纳部分结果。
+加 `--repair-empty-views` 时只恢复没有观察的平面/立面，再复核其端部；可加 `--view-id` 限定一个视图。原始提示词、截断响应和恢复响应分别保留。DeepSeek Flash 输出出现 `finish_reason=length` 时，程序保留 `.truncated.json`，由 high 升为 max 并提高输出额度后仅重试一次，始终保持思考开启；max 仍截断则失败，不采纳部分结果。构件 JSON 格式重试同样使用 max，不静默降级。
 
 API 地址、Key、认证头不作为日志字段保存；已知密钥、Bearer 值和 URL 中的认证参数在日志及错误堆栈中脱敏。长请求每 30 秒记录等待事件，结束后记录耗时、token usage、finish_reason 和响应文件，以区分 API 等待、返回空内容和结构校验失败。
 

@@ -1,6 +1,6 @@
 import unittest
 from pydantic import ValidationError
-from app.member_recognition import MemberResponse, make_input, recognition_prompt, validate_rows, validate_ledger
+from app.member_recognition import MemberResponse, make_input, recognition_prompt, validate_rows, validate_ledger, allowed_model_tags
 
 
 class MemberRecognitionTests(unittest.TestCase):
@@ -38,6 +38,21 @@ class MemberRecognitionTests(unittest.TestCase):
                                 'texts':['TEXT_SECRET'],'profile_labels':['LABEL_SECRET']})
         for forbidden in ('VECTOR_SECRET','TEXT_SECRET','LABEL_SECRET','native_evidence'):
             self.assertNotIn(forbidden,text)
+
+    def test_at_suffix_tags_follow_catalog_identity(self):
+        row = validate_rows([{**self.row, 'view_tags':['EL.1.000(TOS)','elA']}], self.view, self.one)[0]
+        self.assertEqual(row['checks'], [])
+        self.assertIn(self.view['title'], row['view_tags'])
+        tags = allowed_model_tags({'view_catalog':[{'tag':self.view['title'],'kind':'PLAN'}],
+                                   'axis_catalog':{'current_axes':['GRID-Q/6']}})
+        self.assertEqual(set(tags), {self.view['title'], 'EL.1.000(TOS)', 'GRID-Q/6'})
+
+    def test_colliding_short_tags_are_not_guessed(self):
+        one = {**self.one, 'views':self.one['views'] + [
+            {**self.view, 'id':'plan2', 'title':'FOUNDATION PLAN AT EL.1.000(TOS)'}]}
+        row = validate_rows([{**self.row,'view_tags':['EL.1.000(TOS)','elA']}], self.view, one)[0]
+        self.assertTrue(any('对应多个目录项' in check for check in row['checks']))
+        self.assertIn('EL.1.000(TOS)', row['view_tags'])
 
     def test_cross_view_records_remain_independent_and_tags_sorted(self):
         a=validate_rows([self.row],self.view,self.one)[0]

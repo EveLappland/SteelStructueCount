@@ -50,7 +50,7 @@ def review(base,identity,view_id=None,repair_empty=False,number=2):
             analysis=model_call(client,model,prompt,{**manifest[view['page_id']],'id':view['id'],'crop':view['bbox']},
                 folder/f"{view['id']}_observations.json",AnalysisResponse,audit=audit,
                 emit=lambda message:print(message,flush=True),
-                options_override={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None)
+                reasoning_effort='max')
             for o in analysis['observations']:
                 missing=repair_model_evidence(o,evidence,aliases,audit)
                 if missing:o['deferred']=True;o['notes']+='; 证据待确认：'+', '.join(missing)
@@ -73,7 +73,7 @@ def review(base,identity,view_id=None,repair_empty=False,number=2):
             {**manifest[view['page_id']],'id':view['id'],'crop':view['bbox']},
             folder/f"{view['id']}_boundaries.json",BoundaryResponse,reuse_saved=True,
             emit=lambda message:print(message,flush=True),audit=audit,
-            options_override={'extra_body':{'thinking':{'type':'disabled'}}} if model=='deepseek-flash' else None)
+            reasoning_effort='max')
         absent=apply_boundary_reviews(observations,payload,evidence,aliases,audit)
         data['warnings'].extend(payload['warnings'])
         if absent:data['warnings'].append('端部复核缺少观察：'+', '.join(absent))
