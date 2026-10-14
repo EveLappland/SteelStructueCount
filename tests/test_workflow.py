@@ -412,6 +412,26 @@ class NativePdfTest(unittest.TestCase):
         self.assertEqual(result['observations'][0]['id'],'f001-p001-view01-o001')
         self.assertTrue(all(o['view_id']=='f001-p001-view01' for o in result['observations']))
 
+    def test_redundant_fixed_direction_is_removed_without_dropping_level_planes(self):
+        views=prepare_mock_data()['views']
+        views[0].update(visible_axes=['X','Y','Z'],fixed_axis='Z',
+            axis_marks=[{'label':'EL.107.500(TOS)','direction':'Z','point':[.2,.2],'evidence_ids':['t']}])
+        views[1].update(visible_axes=['Z','Y','X'],fixed_axis='Y')
+        audit=MagicMock()
+        result=parse_model_content(json.dumps({'views':views}),ViewResponse,{'id':'p'},audit)
+        self.assertEqual(result['views'][0]['visible_axes'],['X','Y'])
+        self.assertEqual(result['views'][1]['visible_axes'],['Z','X'])
+        self.assertEqual(result['views'][0]['axis_marks'],views[0]['axis_marks'])
+        self.assertEqual(result['views'][0]['bbox'],views[0]['bbox'])
+        self.assertTrue(any(call.args[0]=='VIEW_VISIBLE_AXES_NORMALIZED' for call in audit.event.call_args_list))
+        # Without an explicit fixed direction the parser must not invent one.
+        views[0]['fixed_axis']=None
+        with self.assertRaises(ValueError):
+            parse_model_content(json.dumps({'views':views}),ViewResponse,{'id':'p'})
+        views[0].update(visible_axes=['X','Z'],fixed_axis='Z')
+        with self.assertRaises(ValueError):
+            parse_model_content(json.dumps({'views':views}),ViewResponse,{'id':'p'})
+
     def test_resume_revalidates_saved_raw_response_without_requesting_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory=Path(tmp)

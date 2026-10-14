@@ -119,6 +119,17 @@ def parse_model_content(content, contract, entry, audit=None):
                 original_id=view.get('id')
                 view['id']=f"{entry['id']}-view{index:02d}"
                 view['page_id']=entry['id']
+                # A level mark may be Z even though a plan displays only X/Y.
+                # Drop only an explicitly repeated fixed direction; this does
+                # not assign a project coordinate system or remove named planes.
+                visible=view.get('visible_axes')
+                fixed=view.get('fixed_axis')
+                if (view.get('kind') in ('PLAN','ELEVATION') and fixed in ('X','Y','Z')
+                        and isinstance(visible,list) and len(visible)==3 and set(visible)=={'X','Y','Z'}):
+                    view['visible_axes']=[direction for direction in visible if direction!=fixed]
+                    if audit:audit.event('VIEW_VISIBLE_AXES_NORMALIZED',view_id=view['id'],
+                        original_visible_axes=visible,visible_axes=view['visible_axes'],fixed_axis=fixed,
+                        reason='固定方向被重复列入显示方向；仅移除该冗余方向，保留全部Alignment/标高名称与axis_marks。')
                 if audit and original_id!=view['id']:
                     audit.event('VIEW_ID_ASSIGNED',model_id=original_id,canonical_id=view['id'],
                                 reason='服务端拥有视图标识；模型 ID 不参与文件路径或校验。')
