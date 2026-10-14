@@ -27,6 +27,8 @@ from .discovery_inventory import build_inventory
 from .view_locator import localization_prompt, refine_view_regions
 from .axis_catalog import build_axis_catalog
 from .member_recognition import MemberResponse, validate_ledger
+from .group_reconciliation import reconcile, export_sheets
+from .ledger_coverage import refresh_coverage
 
 
 class ViewResponse(Contract):
@@ -237,6 +239,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                                  'page':entry['page'],'crop':entry.get('crop'),'options':options,
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
                                  'image_dpi':entry.get('image_dpi'),
+                                 'text_only':bool(entry.get('text_only')),
                                  'image_hash':hashlib.sha256(Path(entry['image_path']).read_bytes()).hexdigest() if entry.get('image_path') else None,
                                  'detail_hashes':[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in entry.get('detail_paths',[])],
                                  'source_hash':hashlib.sha256(Path(entry['source_path']).read_bytes()).hexdigest()},sort_keys=True)
@@ -290,8 +293,9 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
     if emit or audit:
         threading.Thread(target=heartbeat,daemon=True).start()
     try:
-        content=[{'type':'text','text':prompt+'\nJSON schema:\n'+schema},
-                 {'type':'image_url','image_url':{'url':render_data_uri(entry, max_dimension=entry.get('image_max_dimension',2600))}}]
+        content=[{'type':'text','text':prompt+'\nJSON schema:\n'+schema}]
+        if not entry.get('text_only'):
+            content.append({'type':'image_url','image_url':{'url':render_data_uri(entry, max_dimension=entry.get('image_max_dimension',2600))}})
         if contract is MemberResponse:content.reverse()
         if contract is MemberResponse and entry.get('detail_paths'):
             content=[content[0],{'type':'text','text':'第一张为完整视图，后续为同一视图依次排列、相互重叠的局部放大图。它们是同一批构件，只统计一次；用全图确定关系，用局部读清标签和端部。'}]+[
@@ -362,7 +366,7 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
                 draft['axis_catalog']=build_axis_catalog(pages,stage_one['views'])
                 draft['profile_catalog']=stage_one['profile_catalog']
             else:draft['axis_catalog']=build_axis_catalog(pages,draft['views'])
-            return validate_ledger(draft)
+            return refresh_coverage(validate_ledger(draft),pages)
         native=evidence_index(pages, draft['manual_evidence'])
         one={key:value for key,value in draft.items() if key in StageOne.model_fields}
         one['discovery_inventory']=build_inventory(one,pages)
@@ -392,6 +396,8 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
         # Never trust candidates edited in JSON; recompute all derived values.
         return build_lengths(one,native)
     if stage==3:
+        if stage_two.get('recognition_mode')=='view_ledger':
+            return reconcile(stage_two,data)
         draft=StageThree.model_validate(data).model_dump()
         return match_entities(stage_two,draft['decisions'])
     raise ValueError('阶段必须是 1、2 或 3。')
@@ -683,7 +689,7 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
     output.mkdir(exist_ok=True)
     workbook=Workbook()
     workbook.remove(workbook.active)
-    sheets=[
+    sheets=export_sheets(stage_two,stage_three) if stage_three.get('reconciliation_mode')=='group_ledger' else [
         ('Quantity Length Summary',['规格','材质','名义长度 mm','单根数量','总长度 mm'],
          [[r['profile'],r['material'],r['length_mm'],r['quantity'],r['total_length_mm']] for r in stage_three['summary']]),
         ('Member Register',['单根 ID','组合 ID','组件序号','规格','材质','首端 mm','尾端 mm','名义长度 mm','观察 ID','证据 ID'],
@@ -704,6 +710,14 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
          [['长度口径','图示参考线的名义长度；TOS/BOB 不自动换算为制造中心线，不包含下料扣减。'],
           ['数量口径','逐实体去重后展开组合钢材为单根；待确认项不计入汇总。']]),
     ]
+    if stage_three.get('reconciliation_mode')=='group_ledger':
+        sheets.extend([
+            ('Review History',['阶段','版本','时间','操作','理由'],
+             [[h['stage'],h['revision'],h['at'],h['action'],h['reason']] for h in history]),
+            ('Coverage',['视图 ID','标题','类型','轴线或面名称','识别状态'],
+             [[v['id'],v['title'],v['kind'],v.get('axis_labels',[]),
+               next((a['status'] for a in stage_two['view_analysis'] if a['view_id']==v['id']),'missing')]
+              for v in stage_two['views']])])
     for name,headers,rows in sheets:
         sheet=workbook.create_sheet(name)
         sheet.append(headers)
@@ -770,10 +784,15 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
         for candidate in result['candidates']:
             audit.event('LENGTH_EVALUATED',**candidate,reason='程序由尺寸链、标高基准与端点差计算；像素不能证明长度。')
     elif stage==3:
-        if store.stage(job_id,2)['data'].get('recognition_mode')=='view_ledger':
-            raise ValueError('新的逐视图台账尚未接入第三阶段去重，禁止交给旧坐标匹配器。')
-        result=match_entities(store.stage(job_id,2)['data'])
-        for match in result['matches']+result['conflicts']:audit.event('ENTITY_MATCH_EVALUATED',**match)
+        two=store.stage(job_id,2)['data']
+        if two.get('recognition_mode')=='view_ledger':
+            result=reconcile(two)
+            emit(f"第三阶段已生成 {len(result['review']['groups'])} 个待核验组；按来源分配确认后计入最终数量。")
+            audit.event('GROUP_REVIEW_GENERATED',source_hash=result['source_hash'],
+                        **result['review']['summary'])
+        else:
+            result=match_entities(two)
+            for match in result['matches']+result['conflicts']:audit.event('ENTITY_MATCH_EVALUATED',**match)
         for exception in result['exceptions']:audit.event('ENTITY_EXCLUDED',**exception)
     else:
         result=export(directory,*(store.stage(job_id,n)['data'] for n in (1,2,3)),

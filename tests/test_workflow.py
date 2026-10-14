@@ -192,10 +192,43 @@ class ApiWorkflowTest(unittest.TestCase):
         tampered=json.loads(json.dumps(edit.json()['data']));tampered['views'][0]['title']='UNCONFIRMED PLAN'
         rejected=self.client.patch(base+'/stages/2',json={'revision':edit.json()['revision'],'data':tampered,'reason':'试图篡改目录'})
         self.assertEqual(rejected.status_code,422)
+        # The image ledger now reaches a separate group reconciliation stage.
+        response=self.client.post(base+'/stages/2/approve',json={'revision':edit.json()['revision'],'acknowledge_pending':True})
+        self.assertEqual(response.status_code,200,response.text)
+        self.app.state.worker(identity,3)
+        third=self.client.get(base+'/stages/3').json()
+        self.assertEqual(third['data']['reconciliation_mode'],'group_ledger')
+        self.assertEqual(third['data']['members'],[])
+        from app.member_recognition import view_tag
+        group=third['data'];source=edit.json()['data']
+        group['resolutions']=[{'id':'verified','spec':'HEA260',
+            'view_tags':[view_tag(v) for v in source['views']], 'length_mm':6000,'member_cnt':1,
+            'allocations':[{'row_id':r['id'],'member_cnt':1} for r in source['view_members']],
+            'reason':'测试夹具：纠正模型规格和长度后确认两个投影为同一实体'}]
+        saved=self.client.patch(base+'/stages/3',json={'revision':third['revision'],'data':group,'reason':'独立核对夹具'})
+        self.assertEqual(saved.status_code,200,saved.text)
+        self.assertEqual(saved.json()['data']['summary'][0]['quantity'],1)
+        # Coverage discrepancies remain visible even after all rows are assigned.
+        self.assertTrue(saved.json()['data']['exceptions'])
+        approved=self.client.post(base+'/stages/3/approve',json={'revision':saved.json()['revision'],'acknowledge_pending':True})
+        self.assertEqual(approved.status_code,200,approved.text)
+        self.app.state.worker(identity,4)
+        completed=self.client.get(base).json()
+        self.assertEqual(completed['state'],'completed')
+        self.assertEqual(completed['total'],1)
+        book=load_workbook(io.BytesIO(self.client.get(completed['download_url']).content))
+        self.assertEqual(book['Quantity Length Summary']['C2'].value,1)
+        self.assertIn('Group Allocations',book.sheetnames)
+        self.assertIn('Excluded Observations',book.sheetnames)
+        again=self.client.post(base+'/stages/3/approve',json={'revision':saved.json()['revision']})
+        self.assertEqual(again.status_code,200,again.text)
+        self.assertEqual(self.client.get(base).json()['total'],1)
         upstream=stage['data'];upstream['views'][0]['axis_labels']=['PROJECT-Q/9'];upstream['views'][0]['axes_reviewed']=True
         edit=self.client.patch(base+'/stages/1',json={'revision':stage['revision'],'data':upstream,'reason':'人工确认轴线'})
         self.assertEqual(edit.status_code,200,edit.text)
         self.assertEqual(self.client.get(base+'/stages/2').json()['status'],'stale')
+        self.assertEqual(self.client.get(base+'/stages/3').json()['status'],'stale')
+        self.assertIsNone(self.client.get(base).json().get('download_url'))
 
     def tearDown(self):
         self.client.__exit__(None,None,None)
