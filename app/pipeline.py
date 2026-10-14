@@ -26,6 +26,7 @@ from .native_pdf import evidence_index, extract_page, view_context, write_json
 from .audit import AuditLog
 from .discovery_inventory import build_inventory
 from .view_locator import localization_prompt, refine_view_regions
+from .axis_catalog import build_axis_catalog
 from .member_recognition import MemberResponse, make_input, recognition_prompt, validate_rows, validate_ledger
 
 
@@ -315,6 +316,7 @@ def validate_draft(directory, stage, data, stage_two=None):
         contract=StageOne if stage==1 else StageTwo
         draft=contract.model_validate(data).model_dump()
         if stage==2 and draft['recognition_mode']=='view_ledger':
+            draft['axis_catalog']=build_axis_catalog(pages,draft['views'])
             return validate_ledger(draft)
         native=evidence_index(pages, draft['manual_evidence'])
         one={key:value for key,value in draft.items() if key in StageOne.model_fields}
@@ -506,7 +508,8 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
                     analysis=call(client,model,recognition_prompt(bundle),
                                   {**entry,'id':view['id'],'crop':view['bbox'],'image_dpi':300},
                                   response_folder/f"{view['id']}_members.json",MemberResponse)
-                    rows=validate_rows(analysis['members'],view,seed or {'views':payload['views'],'profile_catalog':[]})
+                    rows=validate_rows(analysis['members'],view,{**(seed or {'views':payload['views'],'profile_catalog':[]}),
+                                                                'axis_catalog':bundle['axis_catalog']})
                     view_members.extend(rows)
                     count=sum(r['member_cnt'] for r in rows)
                     audit.event('MEMBER_LABEL_COUNT_CHECK',view_id=view['id'],label_count=len(bundle['profile_labels']),
@@ -632,6 +635,7 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
         result=StageTwo(**{**(seed or {}),'views':views,'analysis_pending':False,
                           'observations':[],'warnings':list(dict.fromkeys(warnings))},
                         recognition_mode='view_ledger',view_members=view_members,view_analysis=view_analysis).model_dump()
+        result['axis_catalog']=build_axis_catalog(pages,views)
         return validate_ledger(result)
     if not observations:
         warnings.append('尚无候选构件，不能形成数量结果；请补充或重试。')

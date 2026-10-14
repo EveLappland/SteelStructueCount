@@ -22,6 +22,7 @@ from .native_pdf import inside
 from .store import JobStore, StoreError
 from .audit import AuditLog
 from .discovery_inventory import build_inventory
+from .axis_catalog import build_axis_catalog
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -127,6 +128,7 @@ def create_app(root=ROOT, start_workers=True):
             inventory=build_inventory(result['data'],load_native(directory(job_id)))
             result['data']['discovery_inventory']=inventory
             result['data']['profile_catalog']=[p['profile'] for p in inventory['profiles']]
+            if stage==2:result['data']['axis_catalog']=build_axis_catalog(load_native(directory(job_id)),result['data']['views'])
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
         return result
 

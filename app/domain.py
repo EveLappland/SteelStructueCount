@@ -181,6 +181,7 @@ class StageOne(Contract):
 
 
 class StageTwo(StageOne):
+    axis_catalog: dict = Field(default_factory=dict)
     recognition_mode: Literal['coordinate_legacy','view_ledger'] = 'coordinate_legacy'
     view_members: list[dict] = Field(default_factory=list)
     view_analysis: list[dict] = Field(default_factory=list)

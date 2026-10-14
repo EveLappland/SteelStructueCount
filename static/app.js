@@ -162,9 +162,13 @@ function renderViewLedger() {
     $('#approve').disabled=true;
     target.append(node('p','逐视图候选台账：尚未去重，数量不可作为最终总量。可编辑并保存；新的第三阶段去重尚未接入。'));
     const overview=node('section'),currentSummary=node('section');
+    const axisCatalog=data.axis_catalog||{axes:[],per_view:{},axis_count:0,plan_count:0,elevation_view_count:0};
+    target.append(node('h3','第二阶段图纸目录统计'),
+        node('p',`钢材种类：${data.profile_catalog.length} 种（图纸目录） · 轴面数：${axisCatalog.axis_count} · 平面数：${axisCatalog.plan_count} · 已上传立面视图数：${axisCatalog.elevation_view_count}`),
+        node('p',`轴面名称：${axisCatalog.axes.map(a=>a.name).join('、')||'尚未提取'}`));
     function summarySection(container,rows,label) {
         const stats=LedgerTools.summarize(rows);container.replaceChildren(node('h3',label),
-            node('p',`${stats.profileCount} 种截面 · ${stats.quantity} 个构件段 · ${stats.unknownQuantity} 个缺少长度（未去重，待核对）`),
+            node('p',`钢材种类：${stats.profileCount} 种 · ${stats.quantity} 个构件段 · ${stats.unknownQuantity} 个缺少长度（未去重，待核对）`),
             table(['钢材类型','单根长度 mm','数量'],stats.groups.map(g=>[g.spec,g.length_mm,g.member_cnt])));
     }
     function updateSummaries() {
@@ -182,11 +186,13 @@ function renderViewLedger() {
         const view=data.views.find(v=>v.id===id);
         activeView=view;
         updateSummaries();panel.append(currentSummary);
+        const axes=axisCatalog.per_view[id]||[];
+        panel.append(node('p',`当前视图轴面数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${id}.jpg`,alt:view.title,style:'max-width:100%'}));
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','依据','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
-            LedgerTools.tagEditor(document,r,data.views,()=>{mark(r);refreshJson();}),
+            LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:'ELEVATION',title:a.name,fixed_label:a.name}))],()=>{mark(r);refreshJson();}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
             input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
             input('尺寸与切分依据',r.basis,v=>setField(r,'basis',v)),

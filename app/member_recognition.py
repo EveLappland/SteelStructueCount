@@ -8,6 +8,7 @@ from pydantic import Field, StrictInt
 from .domain import Contract
 from .geometry import section
 from .native_pdf import view_context, inside
+from .axis_catalog import build_axis_catalog
 
 
 class RecognizedMember(Contract):
@@ -33,6 +34,8 @@ def view_tag(view):
 def make_input(page, view, stage_one):
     # Keep geometry auxiliary: a large path dump can overwhelm the visual task.
     context = view_context(page, view['bbox'], max_vectors=120)
+    context_views=[view if v['id']==view['id'] else v for v in stage_one['views']]
+    axes=build_axis_catalog([page],context_views)
     catalog = stage_one.get('discovery_inventory', {}).get('profiles', [])
     labels = [e for p in catalog for e in p.get('evidence', [])
               if e.get('page_id') == page['id'] and inside(e, view['bbox'])]
@@ -46,6 +49,7 @@ def make_input(page, view, stage_one):
         'coordinate_usage': '文字和矢量位置为原PDF整页归一化坐标，仅用于与裁切图片关联。',
         'recognition_priority':'高清图片及识别步骤优先；原生文字用于读数，少量矢量仅辅助轮廓，不要求坐标求解。',
         'profile_catalog': stage_one.get('profile_catalog', []),
+        'axis_catalog':axes,
         'view_catalog': [{**{k: v.get(k) for k in ('id', 'title', 'kind', 'fixed_label',
                                                'elevation_m', 'elevation_basis')},'tag':view_tag(v)}
                          for v in stage_one['views']],
@@ -57,12 +61,16 @@ def recognition_prompt(bundle):
     guidance = (Path(__file__).parent/'prompts'/'stage_two_members.md').read_text(encoding='utf-8')
     # Avoid repeating all native labels with file/page/catalog metadata in the prompt.
     compact={**bundle,'profile_labels':[{'text':e['text'],'bbox':e['bbox']} for e in bundle['profile_labels']]}
-    return guidance + '\n输入包：\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
+    return guidance + ('\n程序提取的 axis_catalog 是辅助轴面目录，名称均来自本项目图纸。'
+                       '根据当前构件走向、端点和所在轴线，从目录选择 view_tags；不要把所有轴面都赋给每根构件。'
+                       '目录中的轴面即使没有上传相应立面图片，也可以作为有图示依据的所属轴面标签。'
+                       '保留原名，不套用其他项目的轴号；不要仅因尺寸数字相同推断同一轴面。'
+                       '\n输入包：\n') + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
 
 
 def validate_rows(rows, view, stage_one):
     catalog=[v for v in stage_one['views'] if v['kind']!='ISOMETRIC']
-    allowed = {view_tag(v) for v in catalog}
+    allowed = {view_tag(v) for v in catalog}|{a['name'] for a in stage_one.get('axis_catalog',{}).get('axes',[])}
     aliases={}
     for v in catalog:
         for alias in (v['id'],v['title'],view_tag(v)):

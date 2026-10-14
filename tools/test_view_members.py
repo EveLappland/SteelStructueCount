@@ -61,7 +61,7 @@ def main():
                        recognition_prompt(bundle),{**entry,'id':view['id'],'crop':view['bbox'],'image_dpi':300},
                        output/'responses/attempt-live/members.json',MemberResponse,
                        emit=lambda text:print(text,flush=True),audit=audit)
-    rows=validate_rows(payload['members'],view,one)
+    rows=validate_rows(payload['members'],view,{**one,'axis_catalog':bundle['axis_catalog']})
     report={'job_id':args.job_id,'stage_one_revision':record[1],'view_id':view['id'],'title':view['title'],
             'members':rows,'row_count':len(rows),'member_cnt':sum(r['member_cnt'] for r in rows),
             'label_count':len(bundle['profile_labels']),'model':model,'deduplicated':False,
