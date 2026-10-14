@@ -199,8 +199,21 @@ class ApiWorkflowTest(unittest.TestCase):
         third=self.client.get(base+'/stages/3').json()
         self.assertEqual(third['data']['reconciliation_mode'],'group_ledger')
         self.assertEqual(third['data']['members'],[])
+        ai_retry=self.client.post(base+'/stages/3/retry',json={'revision':third['revision'],
+            'reuse_saved':False,'settings':{'review_mode':'ai'}})
+        self.assertEqual(ai_retry.status_code,200,ai_retry.text)
+        with patch('app.group_proposal.propose_groups',return_value={
+            'proposal':{'resolutions':[],'exclusions':[],'notes':['待原图核对']},
+            'validation':{'valid':True},'data':None,'folder':'responses/test'}) as propose:
+            self.app.state.worker(identity,3)
+            self.assertEqual(propose.call_args.args[2]['review_mode'],'ai')
+            self.assertFalse(propose.call_args.kwargs['reuse_saved'])
+        third=self.client.get(base+'/stages/3').json()
+        self.assertEqual(third['data']['review']['ai_proposal']['proposal']['notes'],['待原图核对'])
+        self.assertFalse(third['data']['resolutions'])
         from app.member_recognition import view_tag
         group=third['data'];source=edit.json()['data']
+        group['review']['ai_proposal']['proposal']['notes']=['伪造的模型说明']
         group['resolutions']=[{'id':'verified','spec':'HEA260',
             'view_tags':[view_tag(v) for v in source['views']], 'length_mm':6000,'member_cnt':1,
             'allocations':[{'row_id':r['id'],'member_cnt':1} for r in source['view_members']],
@@ -208,6 +221,7 @@ class ApiWorkflowTest(unittest.TestCase):
         saved=self.client.patch(base+'/stages/3',json={'revision':third['revision'],'data':group,'reason':'独立核对夹具'})
         self.assertEqual(saved.status_code,200,saved.text)
         self.assertEqual(saved.json()['data']['summary'][0]['quantity'],1)
+        self.assertEqual(saved.json()['data']['review']['ai_proposal']['proposal']['notes'],['待原图核对'])
         # Coverage discrepancies remain visible even after all rows are assigned.
         self.assertTrue(saved.json()['data']['exceptions'])
         approved=self.client.post(base+'/stages/3/approve',json={'revision':saved.json()['revision'],'acknowledge_pending':True})

@@ -748,7 +748,7 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
     write_json(output/'evidence.json',evidence_index(native,stage_two.get('manual_evidence',[])))
     archive=output/'high_resolution_views.zip'
     with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as package:
-        for folder in ('views','native','responses','logs'):
+        for folder in ('views','native','responses','logs','acceptance'):
             for path in sorted((directory/folder).rglob('*')):
                 if path.is_file():
                     package.write(path,str(path.relative_to(directory)))
@@ -790,10 +790,16 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
             emit(f"第三阶段已生成 {len(result['review']['groups'])} 个待核验组；按来源分配确认后计入最终数量。")
             audit.event('GROUP_REVIEW_GENERATED',source_hash=result['source_hash'],
                         **result['review']['summary'])
+            if settings.get('review_mode')=='ai':
+                from .group_proposal import propose_groups
+                proposal=propose_groups(two,directory,settings,emit,audit,reuse_saved=reuse_saved)
+                result['review']['ai_proposal']={k:proposal[k] for k in ('proposal','validation','folder')}
+                emit('AI分组提案已保存，尚未确认；请核对后载入草稿。')
         else:
             result=match_entities(two)
             for match in result['matches']+result['conflicts']:audit.event('ENTITY_MATCH_EVALUATED',**match)
-        for exception in result['exceptions']:audit.event('ENTITY_EXCLUDED',**exception)
+        for exception in result['exceptions']:
+            audit.event('GROUP_OBSERVATION_PENDING' if result.get('reconciliation_mode')=='group_ledger' else 'ENTITY_EXCLUDED',**exception)
     else:
         result=export(directory,*(store.stage(job_id,n)['data'] for n in (1,2,3)),
                       store.snapshots(job_id),load_native(directory))

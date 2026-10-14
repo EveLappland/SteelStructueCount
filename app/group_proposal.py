@@ -18,7 +18,7 @@ class GroupProposal(Contract):
     notes: list[str] = Field(default_factory=list)
 
 
-def propose_groups(two,directory,settings,emit,audit):
+def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
     from .pipeline import model_call,OpenAI
     folder=directory/'responses'/f'attempt-groups-{uuid.uuid4().hex}'
     folder.mkdir(parents=True)
@@ -36,7 +36,7 @@ def propose_groups(two,directory,settings,emit,audit):
     proposal=model_call(OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1),model,
         guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':')),
         {'id':'group-review','page':1,'source_path':str(snapshot),'text_only':True},
-        folder/'proposal.json',GroupProposal,emit=emit,audit=audit,reasoning_effort='max')
+        folder/'proposal.json',GroupProposal,emit=emit,audit=audit,reasoning_effort='max',reuse_saved=reuse_saved)
     draft=reconcile(two);draft.update(resolutions=proposal['resolutions'],exclusions=proposal['exclusions'])
     try:
         result=reconcile(two,draft)

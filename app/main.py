@@ -72,13 +72,13 @@ def create_app(root=ROOT, start_workers=True):
                 logger.error('job=%s stage=%s failed: %s',job_id,stage,audit.scrub(str(exc)))
                 store.fail(job_id,stage,audit.scrub(str(exc)))
             finally:
-                if stage==2:
+                if stage in (2,3):
                     credentials.pop(job_id,None)
 
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
-        if settings and stage in (1,2):
+        if settings and stage in (1,2,3):
             existing=credentials.get(job_id,{})
-            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model') and v}}
+            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode') and v}}
         if start_workers:
             threading.Thread(target=worker,args=(job_id,stage,reuse_saved),daemon=True).start()
 
@@ -152,6 +152,12 @@ def create_app(root=ROOT, start_workers=True):
                                 stage_one=store.stage(job_id,1)['data'] if stage==2 else None)
         except (ValidationError,ValueError,KeyError) as exc:
             raise HTTPException(422,str(exc)) from exc
+        if stage==3 and data.get('reconciliation_mode')=='group_ledger':
+            # Keep the server's original proposal, never a client-edited claim
+            # of what the model returned. It remains useful for deferred groups.
+            proposal=previous['data'].get('review',{}).get('ai_proposal')
+            if proposal and previous['data'].get('source_hash')==data['source_hash']:
+                data['review']['ai_proposal']=proposal
         if stage==1 and data.get('workflow')=='image_first':render_draft(folder,data)
         store.edit(job_id,stage,body.revision,data,body.reason)
         AuditLog(folder,stage).event('DRAFT_EDITED',revision=body.revision+1,reason=body.reason,
@@ -182,6 +188,7 @@ def create_app(root=ROOT, start_workers=True):
     def retry_stage(job_id:str,stage:int,body:StageAction):
         previous=store.stage(job_id,stage)
         resume=(stage in (1,2) and previous['status'] in ('failed','interrupted') and body.reuse_saved)
+        if stage==3 and body.settings.get('review_mode')=='ai':resume=body.reuse_saved
         next_stage=store.retry(job_id,stage,body.revision)
         launch(job_id,next_stage,body.settings,reuse_saved=resume)
         return status(job_id)
