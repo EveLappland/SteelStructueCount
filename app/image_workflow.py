@@ -3,6 +3,9 @@ import hashlib
 import json
 import struct
 import uuid
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor,as_completed
 import pymupdf as fitz
 from pathlib import Path
 from collections import Counter
@@ -15,6 +18,7 @@ from .member_recognition import make_input,recognition_prompt,MemberResponse,val
 from .native_pdf import write_json,inside
 from .discovery_inventory import labels
 from .geometry import section
+from .ai_concurrency import view_concurrency
 
 
 def detail_images(directory,filename):
@@ -68,8 +72,9 @@ def prepare_catalog(directory,settings,emit,audit,*,reuse_saved=False):
 
 def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     from .pipeline import load_native,model_call,OpenAI
+    batch_started=time.monotonic()
+    limit=view_concurrency(settings)
     base,key,model=_api_settings(settings)
-    client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
     pages={p['id']:p for p in load_native(directory)}
     # Derived catalogs use the current reference-plane definition. Explicitly
     # reviewed per-view names remain authoritative through build_axis_catalog.
@@ -78,12 +83,19 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     folder=directory/'responses'/f'attempt-images-{uuid.uuid4().hex}'
     result=StageTwo(**{**one,'analysis_pending':False},recognition_mode='view_ledger').model_dump()
     result['warnings']=[]
+    identities=[v['id'] for v in one['views']]
+    if len(identities)!=len(set(identities)):raise ValueError('视图ID重复，不能安全保存并发识别响应。')
+    prepared=[]
+    # Prepare native context and validate frozen images on the coordinator.
+    # Workers only read immutable PNGs/JSON and perform independent API calls.
     for view in one['views']:
         if view['kind']=='ISOMETRIC':continue
-        status={'view_id':view['id'],'status':'pending','member_cnt':0}
-        result['view_analysis'].append(status)
+        item={'view':view,'status':{'view_id':view['id'],'status':'queued','member_cnt':0},
+              'rows':[],'warnings':[]}
+        prepared.append(item)
         if not view.get('region_confirmed'):
-            status['status']='region_pending';result['warnings'].append(f"{view['title']} 第一阶段裁切尚未确认，未识别构件。")
+            item['status']['status']='region_pending'
+            item['warnings'].append(f"{view['title']} 第一阶段裁切尚未确认，未识别构件。")
             continue
         image_path=directory/'views'/Path(view.get('image_file','')).name
         if not view.get('image_file') or not image_path.is_file() or view.get('image_bbox')!=view['bbox']:
@@ -93,23 +105,57 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         bundle['image']={'width_px':width,'height_px':height,'dpi':300,'format':'PNG'}
         input_path=folder/f"{view['id']}_input.json";write_json(input_path,bundle)
         context=bundle['native_evidence']
-        emit(f"第二阶段识图：{view['title']}；使用确认图片、规格/视图目录和当前视图文字/矢量证据。")
         audit.event('IMAGE_MEMBER_REQUEST',view_id=view['id'],image_file=view['image_file'],
+                    dispatch_state='prepared',
                     image_sha256=hashlib.sha256(image).hexdigest(),width_px=width,height_px=height,dpi=300,
                     detail_files=view.get('detail_files',[]),
                     input_file=str(input_path.relative_to(directory)),native_text_sent=bool(context['texts']),vectors_sent=bool(context['vectors']),
                     text_count=len(context['texts']),vector_count=len(context['vectors']),vector_total=context['vector_total'],
                     vector_context_truncated=context['vector_context_truncated'])
         if context['vector_context_truncated']:
-            result['warnings'].append(f"{view['title']} 矢量辅助证据只发送了 {len(context['vectors'])}/{context['vector_total']} 条；完整证据保存在 native 目录，不能据此判断构件缺失。")
+            item['warnings'].append(f"{view['title']} 矢量辅助证据只发送了 {len(context['vectors'])}/{context['vector_total']} 条；完整证据保存在 native 目录，不能据此判断构件缺失。")
+        item.update(bundle=bundle,image_path=image_path)
+
+    def checkpoint():
+        # Only this coordinator writes the shared ledger/checkpoint. Rebuild in
+        # catalog order, regardless of the order API responses arrive in.
+        result['view_members']=[row for item in prepared for row in item['rows']]
+        result['view_analysis']=[dict(item['status']) for item in prepared]
+        result['warnings']=[warning for item in prepared for warning in item['warnings']]
+        target=directory/'image_recognition_checkpoint.json'
+        temporary=target.with_suffix('.tmp')
+        write_json(temporary,result);temporary.replace(target)
+
+    eligible=[item for item in prepared if item['status']['status']=='queued']
+    workers=min(limit,len(eligible))
+    audit.event('VIEW_BATCH_STARTED',configured_concurrency=limit,worker_count=workers,
+                eligible_views=len(eligible),skipped_views=len(prepared)-len(eligible),
+                reason='各视图独立请求；共享台账和断点按目录顺序由主线程汇总，阶段确认顺序不变。')
+    emit(f'第二阶段并发识图：{len(eligible)} 个视图，同时最多 {workers} 个请求。')
+    checkpoint()
+    active=0;active_lock=threading.Lock()
+
+    def recognize(item):
+        nonlocal active
+        view=item['view'];bundle=item['bundle'];image_path=item['image_path']
+        started=time.monotonic();status='failed'
+        with active_lock:
+            active+=1;running=active
+        client=None
         try:
+            audit.event('VIEW_RECOGNITION_STARTED',view_id=view['id'],title=view['title'],
+                        active_views=running,concurrency_limit=limit)
+            emit(f"开始识图：{view['title']}；当前同时处理 {running}/{workers} 个视图。")
+            # Each worker owns its HTTP client; SDK retries remain inside the
+            # same slot and retain the existing high/max reasoning settings.
+            client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
             payload=model_call(client,model,recognition_prompt(bundle),
                 {**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
                  'detail_paths':[str(directory/'views'/Path(name).name) for name in view.get('detail_files',[])],
                  'allowed_view_tags':allowed_model_tags(bundle)},
                 folder/f"{view['id']}_members.json",MemberResponse,reuse_saved=reuse_saved,emit=emit,audit=audit,
                 reasoning_effort=settings.get('reasoning_effort','high'))
-            rows=validate_rows(payload['members'],view,one);result['view_members'].extend(rows)
+            rows=validate_rows(payload['members'],view,one)
             count=sum(r['member_cnt'] for r in rows)
             # Native labels are only a local check; never part of the AI request.
             native_profiles=Counter(profile for t in pages[view['page_id']]['texts'] if inside(t,view['bbox']) for profile,_ in labels(t['text']))
@@ -119,17 +165,50 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             coverage=[{'spec':spec,'label_count':native_profiles[spec],'member_cnt':recognized_profiles[spec]}
                       for spec in sorted(native_profiles.keys()|recognized_profiles.keys())
                       if native_profiles[spec]!=recognized_profiles[spec]]
-            status.update(status='completed' if rows else 'empty',member_cnt=count,label_count=native_count,coverage_differences=coverage)
+            outcome={'rows':rows,'warnings':[], 'status':{'view_id':view['id'],
+                'status':'completed' if rows else 'empty','member_cnt':count,
+                'label_count':native_count,'coverage_differences':coverage}}
             audit.event('LOCAL_PROFILE_COVERAGE_CHECK',view_id=view['id'],differences=coverage,
                         reason='只在本地比较各规格标签与候选段数量；拼接可能造成差异，不强制补齐或删除。')
-            if count!=native_count:result['warnings'].append(f"{view['title']}：{native_count}处规格标签与{count}个候选段不一致，需核对。")
-            elif coverage:result['warnings'].append(f"{view['title']} 总数虽相同，但各规格数量覆盖不一致，请核对。")
-            if not rows:result['warnings'].append(f"{view['title']} 未识别到构件，不能作为零根验收。")
+            if count!=native_count:outcome['warnings'].append(f"{view['title']}：{native_count}处规格标签与{count}个候选段不一致，需核对。")
+            elif coverage:outcome['warnings'].append(f"{view['title']} 总数虽相同，但各规格数量覆盖不一致，请核对。")
+            if not rows:outcome['warnings'].append(f"{view['title']} 未识别到构件，不能作为零根验收。")
             for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row)
-            emit(f"{view['title']}：{len(rows)}行，{count}个候选构件段，等待核对。")
-        except Exception as exc:
-            status['status']='failed';status['error']=audit.scrub(str(exc))
-            result['warnings'].append(f"{view['title']} 识别失败：{status['error']}")
-            audit.event('IMAGE_MEMBER_FAILED',view_id=view['id'],error=status['error'])
-        write_json(directory/'image_recognition_checkpoint.json',result)
+            status=outcome['status']['status']
+            return outcome
+        finally:
+            try:
+                if client is not None:
+                    try:client.close()
+                    except Exception as error:
+                        audit.event('VIEW_CLIENT_CLOSE_FAILED',view_id=view['id'],error=str(error))
+            finally:
+                with active_lock:
+                    active-=1;running=active
+                audit.event('VIEW_RECOGNITION_FINISHED',view_id=view['id'],status=status,
+                    active_views=running,elapsed_seconds=round(time.monotonic()-started,3))
+
+    if eligible:
+        with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='steel-view') as executor:
+            futures={executor.submit(recognize,item):item for item in eligible}
+            finished=0
+            for future in as_completed(futures):
+                item=futures[future];view=item['view'];finished+=1
+                try:
+                    outcome=future.result()
+                    item['rows']=outcome['rows'];item['status']=outcome['status']
+                    item['warnings'].extend(outcome['warnings'])
+                    emit(f"识图完成 {finished}/{len(eligible)}：{view['title']}，{len(item['rows'])} 行、{item['status']['member_cnt']} 个候选段。")
+                except Exception as exc:
+                    error=audit.scrub(str(exc))
+                    item['status']={'view_id':view['id'],'status':'failed','member_cnt':0,'error':error}
+                    item['warnings'].append(f"{view['title']} 识别失败：{error}")
+                    audit.event('IMAGE_MEMBER_FAILED',view_id=view['id'],error=error)
+                    emit(f"识图完成 {finished}/{len(eligible)}：{view['title']} 失败；其他视图继续。")
+                checkpoint()
+    audit.event('VIEW_BATCH_FINISHED',configured_concurrency=limit,worker_count=workers,
+                completed_views=sum(i['status']['status']=='completed' for i in prepared),
+                failed_views=sum(i['status']['status']=='failed' for i in prepared),
+                elapsed_seconds=round(time.monotonic()-batch_started,3),
+                reason='全部独立请求结束，按原视图目录生成阶段草稿；成功响应与失败记录均保留。')
     return validate_ledger(result)

@@ -23,7 +23,23 @@ DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明�
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8120
 ```
 
-打开 http://127.0.0.1:8120 。使用单个 Uvicorn 进程，不加 `--workers`；模型任务按锁串行运行。整个应用的实际根目录是本 README 所在目录，不是外层同名目录。
+打开 http://127.0.0.1:8120 。使用单个 Uvicorn 进程，不加 `--workers`；任务阶段按锁排队，第二阶段内部可同时识别多个独立视图。整个应用的实际根目录是本 README 所在目录，不是外层同名目录。
+
+第二阶段默认同时识别3个视图，可在网页“视觉模型设置 → 同时识别视图数”填写正整数（实际并发不会超过待识别视图数），或在 `.env` 配置 `LLM_MAX_CONCURRENCY=3`。设为1可逐视图执行。网页非空值覆盖环境配置；网页设置在内存中用于本次执行，重启后需重新填写或使用 `.env`。阶段确认/重试API也可在 `settings` 中传字符串 `max_concurrency`，例如 `"3"`。
+
+完整真实 API 验收可运行 `uv run python tools/run_full_acceptance.py --source-job <源任务ID> --reference <独立核对表JSON> --suffixes 02,03,04,05`。这会复制指定图纸创建新任务，三个阶段均使用 max，按 `.env` 并发；自动放行阶段仅用于测试，不能视为人工工程确认。第三阶段只采用通过本地守恒检查的原始AI提案，不依据答案纠错。参考答案在模型调用全部结束后读取，生成 `data/jobs/<新任务ID>/full_acceptance.json` 和 `acceptance/report.md`。指标包含规格、完整所属面及长度同时符合的数量加权 precision/recall，各规格数量偏差，以及同规格同所属面内最小长度误差配对的MAE、最大误差、MAPE；未配对项仍作为严格漏项或多计，不能用较低MAE掩盖遗漏。模型接口可能收费。
+
+并发只用于第二阶段独立的识图请求。PDF原生提取、裁切准备、第一阶段定位、第三阶段全局分组及阶段确认顺序保持原流程。每个视图使用自己的HTTP客户端，沿用同一份高清PNG、局部图、提示词、响应结构和high/max思考强度；重试占用原并发槽，不额外增加并发数。各视图可以乱序完成，但观察ID和台账顺序始终按原目录生成，共享断点文件由主线程原子替换。一个视图失败不取消其他视图，成功响应继续保留，重试仍按现有签名和思考强度规则校验复用。
+
+日志新增 `VIEW_BATCH_STARTED`、`VIEW_RECOGNITION_STARTED/FINISHED`、`VIEW_BATCH_FINISHED`，记录配置并发数、实际工作槽数、视图ID、同时处理数和耗时；进度日志显示完成数/总视图数。增加并发会改变调度顺序，不降低思考强度或跳过准确性检查。
+
+可用现有任务图片进行本地HTTP/SDK并发测试，不调用付费API、不修改任务：
+
+```powershell
+.\.venv\Scripts\python.exe tools\benchmark_view_concurrency.py --job-id <任务ID> --views 3 --limits 1,3 --delay 1
+```
+
+工具向127.0.0.1的模拟OpenAI兼容服务发送真实图片输入，模拟固定等待，验证实际同时请求数、1路与多路的请求体及台账结果一致。报告位于 `tmp/concurrency_benchmark/`，明确标记 `mock_api: true`。模拟输出不是钢材台账或真实模型准确率基准，耗时也不能当作上游模型实测加速比。
 
 ## 三阶段确认
 
@@ -85,7 +101,7 @@ DeepSeek 官方视觉说明指出，大图推理前会按比例缩小至约 1300
 .\.venv\Scripts\python.exe tools\test_image_workflow.py --source-job <新流程任务ID> --reuse-prepared
 ```
 
-新任务数据包含 `workflow=image_first`；SQLite 的版本确认、人工修改历史和串行执行机制不变。识别准确性需要人工代表样本或完整基准台账验收，API 返回成功不等同于钢材识别正确。
+新任务数据包含 `workflow=image_first`；SQLite 的版本确认、人工修改历史和阶段排队机制不变，第二阶段视图识别按配置并发。识别准确性需要人工代表样本或完整基准台账验收，API 返回成功不等同于钢材识别正确。
 
 
 有问题时修正或明确保留待确认项。新图片流程的第二阶段数量均为候选观察，不作为已确认工程统计。修改上游阶段会使下游失效并隐藏旧下载链接。已确认阶段也可以重新编辑，修改和确认均保留历史。

@@ -144,7 +144,7 @@ class ApiWorkflowTest(unittest.TestCase):
             view['bbox']=[0,0,.49,1] if index==0 else [.51,0,1,1]
             view['structure_bbox']=[.06,.2,.4,.4] if index==0 else [.55,.2,.9,.4]
         identity=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
-                                  data={'base_url':'https://example.test','api_key':'catalog-test-key','model':'test'}).json()['id']
+                                  data={'base_url':'https://example.test','api_key':'catalog-test-key','model':'test','max_concurrency':'2'}).json()['id']
         base=f'/api/jobs/{identity}'
         with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
             self.app.state.worker(identity,1)
@@ -160,6 +160,11 @@ class ApiWorkflowTest(unittest.TestCase):
         original=self.client.get(base+'/views/'+image).content
         self.assertTrue(original.startswith(b'\x89PNG'))
         self.assertEqual(self.client.get(base+'/stages/2').status_code,404)
+        invalid=self.client.post(base+'/stages/1/approve',json={'revision':1,'acknowledge_pending':True,
+            'settings':{'max_concurrency':'0'}})
+        self.assertEqual(invalid.status_code,422)
+        self.assertEqual(self.client.get(base+'/stages/1').json()['status'],'awaiting_review')
+        self.assertEqual(self.client.get(base+'/stages/2').status_code,404)
         response=self.client.post(base+'/stages/1/approve',json={'revision':1,'acknowledge_pending':True,
             'settings':{'base_url':'https://example.test','api_key':'recognition-test-key','model':'test'}})
         self.assertEqual(response.status_code,200,response.text)
@@ -172,10 +177,16 @@ class ApiWorkflowTest(unittest.TestCase):
             self.assertTrue(all('profile_catalog' in call.args[2] for call in model.call_args_list))
         stage_two=self.client.get(base+'/stages/2').json()
         self.assertEqual(stage_two['status'],'awaiting_review')
+        batches=[r for r in self.client.get(base+'/logs?limit=1000').json()['items'] if r['event']=='VIEW_BATCH_STARTED']
+        self.assertEqual(batches[-1]['configured_concurrency'],2)
         self.assertEqual(len(stage_two['data']['view_members']),2)
         self.assertTrue(all(r['location']=='A轴与B轴之间' and 'basis' not in r for r in stage_two['data']['view_members']))
         self.assertTrue(any(a.get('coverage_differences') for a in stage_two['data']['view_analysis']))
         self.assertEqual(self.client.get(base+'/views/'+image).content,original)
+        invalid=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision'],
+            'settings':{'max_concurrency':'-1'}})
+        self.assertEqual(invalid.status_code,422)
+        self.assertEqual(self.client.get(base+'/stages/2').json()['revision'],stage_two['revision'])
         retry=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision']})
         self.assertEqual(retry.status_code,200,retry.text)
         with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:

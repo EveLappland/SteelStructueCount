@@ -24,6 +24,7 @@ from .audit import AuditLog
 from .discovery_inventory import build_inventory
 from .axis_catalog import build_axis_catalog
 from .member_recognition import normalize_view_tags
+from .ai_concurrency import view_concurrency
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env')
@@ -78,7 +79,7 @@ def create_app(root=ROOT, start_workers=True):
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
         if settings and stage in (1,2,3):
             existing=credentials.get(job_id,{})
-            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode') and v}}
+            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode','max_concurrency') and v}}
         if start_workers:
             threading.Thread(target=worker,args=(job_id,stage,reuse_saved),daemon=True).start()
 
@@ -86,7 +87,8 @@ def create_app(root=ROOT, start_workers=True):
 
     @application.post('/api/jobs')
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
-                   api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True)):
+                   api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True),
+                   max_concurrency:int|None=Form(None,ge=1)):
         pdfs=[file for file in files if file.filename and file.filename.lower().endswith('.pdf')]
         if not pdfs:
             raise HTTPException(400,'请至少上传一个 PDF。')
@@ -101,7 +103,8 @@ def create_app(root=ROOT, start_workers=True):
             except OSError as exc:
                 raise HTTPException(500,'无法保存上传文件。') from exc
         store.create(job_id)
-        launch(job_id,1,{'base_url':base_url,'api_key':api_key,'model':model})
+        launch(job_id,1,{'base_url':base_url,'api_key':api_key,'model':model,
+                        'max_concurrency':str(max_concurrency) if max_concurrency is not None else ''})
         return {'id':job_id,'state':'queued','schema_version':2}
 
     @application.get('/api/jobs')
@@ -173,6 +176,9 @@ def create_app(root=ROOT, start_workers=True):
             raise StoreError('阶段版本已改变，请刷新后再操作。')
         if draft['status'] not in ('awaiting_review','approved'):
             raise StoreError('只有等待确认的草稿可以确认。')
+        if stage==1 and draft['data'].get('workflow')=='image_first' and draft['status']!='approved':
+            try:view_concurrency({**credentials.get(job_id,{}),**{k:v for k,v in body.settings.items() if v}})
+            except ValueError as error:raise HTTPException(422,str(error)) from error
         if draft['status']!='approved':
             pending=pending_reasons(stage,draft['data'])
             if pending and not body.acknowledge_pending:
@@ -187,6 +193,9 @@ def create_app(root=ROOT, start_workers=True):
     @application.post('/api/jobs/{job_id}/stages/{stage}/retry')
     def retry_stage(job_id:str,stage:int,body:StageAction):
         previous=store.stage(job_id,stage)
+        if stage==2 and store.stage(job_id,1)['data'].get('workflow')=='image_first':
+            try:view_concurrency({**credentials.get(job_id,{}),**{k:v for k,v in body.settings.items() if v}})
+            except ValueError as error:raise HTTPException(422,str(error)) from error
         resume=(stage in (1,2) and previous['status'] in ('failed','interrupted') and body.reuse_saved)
         if stage==3 and body.settings.get('review_mode')=='ai':resume=body.reuse_saved
         next_stage=store.retry(job_id,stage,body.revision)

@@ -59,3 +59,11 @@ class ViewLocatorTest(unittest.TestCase):
     def test_unowned_outside_citation_still_blocks(self):
         page,views=self.fixture();views[0]['boundary_evidence_ids']=['border']
         self.assertFalse(refine_view_regions(page,views)[0]['region_confirmed'])
+
+    def test_foreign_title_outside_structure_is_rejected_without_expanding(self):
+        page,views=self.fixture();views[0]['boundary_evidence_ids']=['title-right']
+        result=refine_view_regions(page,views)
+        self.assertTrue(result[0]['region_confirmed'])
+        self.assertEqual(result[0]['boundary_evidence_ids'],[])
+        self.assertEqual(result[0]['localization']['rejected_boundary_evidence'][0]['owner_view'],'right')
+        self.assertLess(result[0]['bbox'][2],.5)
