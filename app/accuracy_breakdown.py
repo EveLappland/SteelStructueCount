@@ -3,7 +3,7 @@ from collections import defaultdict
 from .accuracy import _units, score
 
 
-def _pairs(expected, actual):
+def _error_pairs(expected, actual):
     """Pair the smaller sorted list to a subset of the larger at minimum L1 cost."""
     swapped = len(expected) > len(actual)
     small, large = (actual, expected) if swapped else (expected, actual)
@@ -24,6 +24,18 @@ def _pairs(expected, actual):
             result.append((b, a) if swapped else (a, b)); i -= 1
         j -= 1
     return result
+
+
+def _pairs(expected, actual):
+    """Preserve maximum <=1mm matches before diagnosing remaining lengths."""
+    matched=[];left=[];right=[];i=j=0
+    while i<len(expected) and j<len(actual):
+        a,b=expected[i],actual[j]
+        if abs(a-b)<=1:matched.append((a,b));i+=1;j+=1
+        elif a<b:left.append(a);i+=1
+        else:right.append(b);j+=1
+    left.extend(expected[i:]);right.extend(actual[j:])
+    return matched+_error_pairs(left,right)
 
 
 def breakdown(reference, predictions):
@@ -63,4 +75,4 @@ def breakdown(reference, predictions):
         profile_precision=len(common)/len(ap) if ap else 0,profile_recall=len(common)/len(ep) if ep else 0,
         profile_set_accuracy=len(common)/len(ep|ap) if ep|ap else 0,
         missing_profiles=sorted(ep-ap),extra_profiles=sorted(ap-ep),profiles=rows,
-        length_pairing_rule='同规格且完整所属面集合相同，按单根展开后最大配对数量、最小绝对长度误差；配对仅用于误差诊断，不证明同一实体。未配对项不进入MAE，但仍计入严格漏项/多计。')
+        length_pairing_rule='同规格且完整所属面集合相同，按单根展开后优先最大匹配1mm内的正确长度，再对剩余长度作最大数量、最小绝对误差配对；配对仅用于诊断，不证明同一实体。未配对项不进入MAE，但仍计入严格漏项/多计。')

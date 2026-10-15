@@ -3,8 +3,11 @@ from app.accuracy_breakdown import breakdown, _pairs
 
 class BreakdownTests(unittest.TestCase):
     def test_subset_pairing_and_reversal(self):
-        self.assertEqual(_pairs([10,30],[8,11,31]),[(30,31),(10,11)])
-        self.assertEqual(_pairs([8,11,31],[10,30]),[(31,30),(11,10)])
+        self.assertCountEqual(_pairs([10,30],[8,11,31]),[(30,31),(10,11)])
+        self.assertCountEqual(_pairs([8,11,31],[10,30]),[(31,30),(11,10)])
+
+    def test_correct_length_is_preserved_when_total_error_has_multiple_optima(self):
+        self.assertEqual(_pairs([5449,5517],[5439,5449]),[(5449,5449),(5517,5439)])
 
     def test_count_length_profile_and_assembly_metrics(self):
         ref={'scope':{},'members':[dict(spec='2LF-L120*12',view_tags=['A'],length_mm=5000,member_cnt=1)]}
