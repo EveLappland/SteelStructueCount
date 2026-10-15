@@ -241,6 +241,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
                                  'image_dpi':entry.get('image_dpi'),
                                  'text_only':bool(entry.get('text_only')),
+                                 **({'prepared_image_hash':hashlib.sha256(entry['prepared_data_uri'].encode()).hexdigest()} if entry.get('prepared_data_uri') else {}),
                                  'image_hash':hashlib.sha256(Path(entry['image_path']).read_bytes()).hexdigest() if entry.get('image_path') else None,
                                  'detail_hashes':[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in entry.get('detail_paths',[])],
                                  'source_hash':hashlib.sha256(Path(entry['source_path']).read_bytes()).hexdigest()},sort_keys=True)

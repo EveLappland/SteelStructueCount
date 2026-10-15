@@ -1,6 +1,6 @@
-import copy,json,tempfile,unittest
+import copy,json,tempfile,unittest,threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 import pymupdf as fitz
 from fastapi.testclient import TestClient
 from app.audit import AuditLog
@@ -32,9 +32,88 @@ class StageOneTests(unittest.TestCase):
         self.audit=AuditLog(self.root,1)
     def tearDown(self):self.tmp.cleanup()
 
-    def run_prepare(self,call):
+    def run_prepare(self,call,concurrency=1,**options):
         with patch('app.pipeline.OpenAI'),patch('app.llm_runner._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=call):
-            return prepare(self.root,{},lambda _:None,self.audit)
+            return prepare(self.root,{'max_concurrency':str(concurrency)},lambda _:None,self.audit,**options)
+
+    def test_parallel_requests_out_of_order_with_serial_rendering_and_stable_checkpoint(self):
+        from app.drawing_input import render_data_uri
+        main_thread=threading.get_ident();both_purposes=threading.Barrier(2)
+        second_catalog_done=threading.Event();clients=[];calls=[]
+        def render(*args,**kwargs):
+            self.assertEqual(threading.get_ident(),main_thread)
+            return render_data_uri(*args,**kwargs)
+        def ai(client,model,prompt,entry,path,contract,**kwargs):
+            self.assertNotEqual(threading.get_ident(),main_thread)
+            self.assertTrue(entry['prepared_data_uri'].startswith('data:image/jpeg;base64,'))
+            clients.append(client);calls.append((entry['page'],contract))
+            self.assertTrue(kwargs['reuse_saved']);self.assertEqual(kwargs['reasoning_effort'],'high')
+            if contract is PageAssessment:
+                both_purposes.wait(timeout=5)
+                return {'decision':'CONSTRUCTION','reason':'建造图'}
+            if entry['page']==1:self.assertTrue(second_catalog_done.wait(timeout=5))
+            else:second_catalog_done.set()
+            return catalog()
+        with patch('app.drawing_input.render_data_uri',side_effect=render),patch('app.pipeline.OpenAI',side_effect=lambda **kw:Mock()):
+            # run_prepare normally patches the constructor; call prepare directly here.
+            with patch('app.llm_runner._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=ai):
+                result=prepare(self.root,{'max_concurrency':'2'},lambda _:None,self.audit,reuse_saved=True)
+        self.assertEqual(len({id(c) for c in clients}),4)
+        for client in clients:client.close.assert_called_once()
+        for page in (1,2):
+            self.assertLess(calls.index((page,PageAssessment)),calls.index((page,ConstructionCatalog)))
+        self.assertEqual([v['id'] for v in result['views']],['f000-p001-view01','f000-p002-view01'])
+        checkpoint=json.loads((self.root/'page_catalog_checkpoint.json').read_text(encoding='utf-8'))
+        self.assertEqual([p['page'] for p in checkpoint['page_decisions']],[1,2])
+        self.assertEqual([v['id'] for v in checkpoint['views']],[v['id'] for v in result['views']])
+        self.assertEqual(len(checkpoint['views']),2)
+        self.assertFalse((self.root/'page_catalog_checkpoint.tmp').exists())
+
+    def test_parallel_failure_does_not_cancel_other_page_and_reuses_request_slot(self):
+        barrier=threading.Barrier(2)
+        def ai(client,model,prompt,entry,path,contract,**kwargs):
+            if contract is PageAssessment:
+                barrier.wait(timeout=5)
+                if entry['page']==1:raise TimeoutError('请求超时/限流重试已耗尽')
+                return {'decision':'CONSTRUCTION','reason':'建造图'}
+            return catalog()
+        result=self.run_prepare(ai,concurrency=2)
+        self.assertEqual(len(result['views']),1)
+        self.assertEqual(result['views'][0]['page_id'],'f000-p002')
+        self.assertEqual(result['catalog_summary']['pending_pages'],1)
+        self.assertIn('超时',result['page_decisions'][0]['issue'])
+
+    def test_preview_failure_stays_page_pending(self):
+        from app.drawing_input import render_data_uri
+        def render(entry,**kwargs):
+            if entry['page']==1:raise ValueError('预览渲染失败')
+            return render_data_uri(entry,**kwargs)
+        def ai(client,model,prompt,entry,path,contract,**kwargs):
+            self.assertEqual(entry['page'],2)
+            if contract is PageAssessment:return {'decision':'CONSTRUCTION','reason':'建造图'}
+            return catalog()
+        with patch('app.drawing_input.render_data_uri',side_effect=render):
+            result=self.run_prepare(ai,concurrency=2)
+        self.assertEqual(len(result['views']),1)
+        self.assertIn('预览渲染失败',result['page_decisions'][0]['issue'])
+
+    def test_more_pages_than_slots_never_exceed_limit_and_all_skips_are_recorded(self):
+        (self.root/'uploads/arbitrary.pdf').write_bytes(document(pages=5))
+        lock=threading.Lock();barrier=threading.Barrier(2);active=0;peak=0
+        def ai(client,model,prompt,entry,path,contract,**kwargs):
+            nonlocal active,peak
+            self.assertIs(contract,PageAssessment)
+            with lock:active+=1;peak=max(peak,active)
+            try:
+                if entry['page']<=2:barrier.wait(timeout=5)
+                return {'decision':'SKIP','reason':'节点详图'}
+            finally:
+                with lock:active-=1
+        result=self.run_prepare(ai,concurrency=2)
+        self.assertEqual(peak,2)
+        self.assertEqual([r['page'] for r in result['page_decisions']],list(range(1,6)))
+        self.assertEqual(result['catalog_summary']['skipped_pages'],5)
+        self.assertFalse((self.root/'views').exists())
 
     def test_assess_before_localize_and_render_only_adopted_construction_views(self):
         calls=[]
