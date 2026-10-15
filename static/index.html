@@ -6,7 +6,7 @@
 <section class="workspace">
 <form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>第一阶段定位视图、提取轴线并生成高清裁切；确认后第二阶段识图生成钢材台账。请配置视觉模型，或使用已有 .env 设置。</p>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
-<details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><small>网页 Key 仅用于本次识别，重启或重试时可重新填写。</small></details>
+<details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><label>同时识别视图数<input id="max-concurrency" type="number" min="1" max="8" step="1" placeholder="默认3；设为1逐个识别"></label><small>网页设置仅用于本次任务；重启后使用 .env 或重新填写。并发识别沿用当前高清图、提示词和思考强度。</small></details>
 <p id="upload-error" role="alert" hidden></p><button id="submit" type="submit">开始第一阶段</button></form>
 <section class="status-panel"><h2>任务与进度</h2><label>已有任务<select id="job-list"><option value="">选择任务</option></select></label><p id="status" aria-live="polite">等待上传</p><p id="error" role="alert" hidden></p><ol id="event-log" class="event-log"></ol><div id="downloads"></div></section>
 </section>
