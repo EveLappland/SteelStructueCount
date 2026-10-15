@@ -27,6 +27,13 @@ def localization_prompt(page,frame):
         'Register visible EL level names including their printed TOS/BOB datum as well as Alignment names; '
         'use Z for level marks and bind each name only to its own view. '
         'fixed_label is the alignment of this elevation, not the list of all axes visible in it. '
+        'Classify EACH located view using takeoff_role: MEMBERS for layouts of complete beams/columns/braces; '
+        'REFERENCE for isometric overviews, notes, and foundation plans showing only column cross-section projections; '
+        'EXCLUDE for plate/bolt/connection details and drawing tables; REVIEW when the use is ambiguous. '
+        'Explain the visible content and counting consequence in filter_reason. '
+        'A BOB datum, lack of profile labels, or a plate detail elsewhere on the same page does NOT by itself justify filtering a structural layout. '
+        'Keep every independent structural view in the catalog even if REFERENCE or REVIEW; never filter an entire PDF by its name. '
+        'Do not return filter_reviewed; the application owns manual review state. '
         'Never reuse a repeated grid label from a neighbouring view as this view evidence. '
         'PLAN uses X/Y with fixed Z elevation; ISOMETRIC provides coverage only. '
         f"Native independent titles: {json.dumps(page['titles'],ensure_ascii=False)}\n"

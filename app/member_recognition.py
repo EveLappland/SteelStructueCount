@@ -155,7 +155,8 @@ def validate_ledger(data):
         if raw['id'] in seen: raise ValueError('构件台账 ID 重复')
         seen.add(raw['id'])
         view = views.get(raw['source_view'])
-        if not view or view['kind'] == 'ISOMETRIC': raise ValueError('构件来源必须是已登记的平面或立面')
+        from .view_filter import eligible
+        if not view or not eligible(view): raise ValueError('构件来源必须是已纳入统计的平面或立面')
         rows.extend(validate_rows([raw], view, data))
     data['view_members'] = rows
     data['length_catalog'] = [

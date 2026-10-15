@@ -29,6 +29,7 @@ from .axis_catalog import build_axis_catalog
 from .member_recognition import MemberResponse, validate_ledger
 from .group_reconciliation import reconcile, export_sheets
 from .ledger_coverage import refresh_coverage
+from .view_filter import apply_filter,role
 
 
 class ViewResponse(Contract):
@@ -83,7 +84,7 @@ def request_options(model, effort='high'):
 def model_schema(contract):
     schema=contract.model_json_schema()
     # Do not ask the model to generate identities owned by the application.
-    for name,fields in [('View',('id','page_id','region_confirmed','localization','image_file','image_bbox','detail_files','axis_labels','axes_reviewed')),('Observation',('id','view_id')),('Axis',('aliases',))]:
+    for name,fields in [('View',('id','page_id','region_confirmed','localization','image_file','image_bbox','detail_files','axis_labels','axes_reviewed','filter_reviewed')),('Observation',('id','view_id')),('Axis',('aliases',))]:
         definition=schema.get('$defs',{}).get(name)
         if definition:
             for field in fields:definition.get('properties',{}).pop(field,None)
@@ -93,7 +94,7 @@ def model_schema(contract):
     if contract is ViewResponse:
         definition=schema['$defs']['View']
         definition['required']=list(dict.fromkeys(definition['required']+
-            ['structure_bbox','boundary_reason','boundary_evidence_ids']))
+            ['structure_bbox','boundary_reason','boundary_evidence_ids','takeoff_role','filter_reason']))
     return schema
 
 
@@ -362,7 +363,7 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
         draft=contract.model_validate(data).model_dump()
         if stage==2 and draft['recognition_mode']=='view_ledger':
             if draft.get('workflow')=='image_first' and stage_one is not None:
-                if draft['views']!=stage_one['views']:raise ValueError('第二阶段不能更改已确认的视图目录；请返回第一阶段修改。')
+                if draft['views']!=StageOne.model_validate(stage_one).model_dump()['views']:raise ValueError('第二阶段不能更改已确认的视图目录；请返回第一阶段修改。')
                 draft['axis_catalog']=build_axis_catalog(pages,stage_one['views'])
                 draft['profile_catalog']=stage_one['profile_catalog']
             else:draft['axis_catalog']=build_axis_catalog(pages,draft['views'])
@@ -391,7 +392,8 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
                     if not view.get('axes_reviewed'):
                         view['axis_labels']=one['axis_catalog']['per_view'].get(view['id'],[])
                 one['warnings']=[w for w in one['warnings'] if '区域待确认：' not in w]
-                one['warnings'].extend(f"{v['title']} 区域待确认：请核对裁切后确认。" for v in one['views'] if not v['region_confirmed'])
+                one['warnings'].extend(f"{v['title']} 区域待确认：请核对裁切后确认。" for v in one['views'] if not v['region_confirmed'] and role(v) in ('MEMBERS','REVIEW'))
+                apply_filter(one,pages)
             return one
         # Never trust candidates edited in JSON; recompute all derived values.
         return build_lengths(one,native)
@@ -676,7 +678,7 @@ def render_draft(directory, data):
 
 def pending_reasons(stage,data):
     if stage==1:
-        return data.get('warnings',[])+(['没有候选构件。'] if not data.get('analysis_pending') and not data.get('observations') else [])
+        return data.get('warnings',[])+(['没有候选构件。'] if data.get('workflow')!='image_first' and not data.get('analysis_pending') and not data.get('observations') else [])
     if stage==2:
         if data.get('recognition_mode')=='view_ledger':
             return data.get('warnings',[])+[f"{r['id']}：{'; '.join(r['checks'])}" for r in data['view_members'] if r['checks']]
@@ -718,6 +720,10 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
              [[v['id'],v['title'],v['kind'],v.get('axis_labels',[]),
                next((a['status'] for a in stage_two['view_analysis'] if a['view_id']==v['id']),'missing')]
               for v in stage_two['views']])])
+    if stage_one.get('workflow')=='image_first':
+        sheets.append(('View Scope',['视图 ID','标题','用途','进入构件识别','理由','人工修改用途'],
+            [[v['id'],v['title'],role(v),role(v)=='MEMBERS',v.get('filter_reason',''),v.get('filter_reviewed',False)]
+             for v in stage_one['views']]))
     for name,headers,rows in sheets:
         sheet=workbook.create_sheet(name)
         sheet.append(headers)

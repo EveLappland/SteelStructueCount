@@ -79,6 +79,9 @@ class View(Contract):
     detail_files: list[str] = Field(default_factory=list)
     axis_labels: list[str] = Field(default_factory=list,description='当前视图的轴线或面名称：Alignment立面与EL标高平面')
     axes_reviewed: bool = False
+    takeoff_role: Literal['MEMBERS','REFERENCE','EXCLUDE','REVIEW'] = 'MEMBERS'
+    filter_reason: str = ''
+    filter_reviewed: bool = False
 
     @model_validator(mode='after')
     def valid_box(self):
@@ -182,6 +185,7 @@ class StageOne(Contract):
     manual_evidence: list[Evidence] = Field(default_factory=list)
     profile_catalog: list[str] = Field(default_factory=list)
     discovery_inventory: dict = Field(default_factory=dict)
+    view_filter_summary: dict = Field(default_factory=dict)
     analysis_pending: bool = False
     warnings: list[str] = Field(default_factory=list)
     notes: str = ''

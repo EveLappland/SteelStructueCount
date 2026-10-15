@@ -381,8 +381,9 @@ class NativePdfTest(unittest.TestCase):
             self.assertTrue(result['views'])
             actual_prompt=client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['text']
             self.assertIn('HEA180 /EPB',actual_prompt)
-            self.assertIn('第一阶段已由程序提取原生文字',actual_prompt)
-            self.assertEqual(actual_prompt.count('第一阶段已由程序提取原生文字'),1)
+            self.assertIn('你在第一阶段定位各独立视图',actual_prompt)
+            self.assertIn('takeoff_role',actual_prompt)
+            self.assertEqual(actual_prompt.count('你在第一阶段定位各独立视图'),1)
             self.assertTrue(output.with_suffix('.truncated.json').exists())
             self.assertEqual(client.chat.completions.create.call_count,2)
             options=client.chat.completions.create.call_args.kwargs

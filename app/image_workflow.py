@@ -19,6 +19,7 @@ from .native_pdf import write_json,inside
 from .discovery_inventory import labels
 from .geometry import section
 from .ai_concurrency import view_concurrency
+from .view_filter import apply_filter,role
 
 
 def detail_images(directory,filename):
@@ -58,13 +59,16 @@ def freeze_images(directory,data):
 
 
 def prepare_catalog(directory,settings,emit,audit,*,reuse_saved=False):
-    from .pipeline import catalog_only,discover
+    from .pipeline import catalog_only,discover,load_native
     seed=catalog_only(directory,emit,audit)
     # Archived coordinate drafts remain supported for legacy imports/tests.
     if seed.get('observations'):return seed
     emit('第一阶段：定位独立视图，准备高清裁切和逐视图轴线或面名称目录。')
     result=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=seed,regions_only=True)
+    for view in result['views']:view['filter_reviewed']=False
+    apply_filter(result,load_native(directory),audit)
     freeze_images(directory,result)
+    emit('第一阶段用途过滤：'+json.dumps(result['view_filter_summary']['counts'],ensure_ascii=False))
     audit.event('VIEW_CATALOG_PREPARED',view_count=len(result['views']),axis_count=result['axis_catalog']['axis_count'],
                 reason='第一阶段定位视图及Alignment/标高平面名称，不调用构件识别；确认后图片与目录供第二阶段使用。')
     return result
@@ -93,6 +97,13 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         item={'view':view,'status':{'view_id':view['id'],'status':'queued','member_cnt':0},
               'rows':[],'warnings':[]}
         prepared.append(item)
+        purpose=role(view)
+        if purpose!='MEMBERS':
+            item['status'].update(status='filter_pending' if purpose=='REVIEW' else 'filtered',
+                                  takeoff_role=purpose,reason=view.get('filter_reason',''))
+            audit.event('VIEW_RECOGNITION_SKIPPED',**item['status'])
+            if purpose=='REVIEW':item['warnings'].append(f"用途待确认：{view['title']}；未调用构件识别，不能作为零根验收。")
+            continue
         if not view.get('region_confirmed'):
             item['status']['status']='region_pending'
             item['warnings'].append(f"{view['title']} 第一阶段裁切尚未确认，未识别构件。")

@@ -25,6 +25,7 @@ def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
     snapshot=folder/'stage_two_input.json';write_json(snapshot,two)
     bundle={'source_hash':source_hash(two),'profile_catalog':two['profile_catalog'],
         'views':[{'id':v['id'],'name':view_tag(v),'kind':v['kind'],
+                  'takeoff_role':v.get('takeoff_role','MEMBERS'),
                   'bound_planes':two.get('axis_catalog',{}).get('per_view',{}).get(v['id'],[])}
                  for v in two['views'] if v['kind']!='ISOMETRIC'],
         'observations':[{k:r.get(k) for k in ('id','source_view','spec','view_tags','member_cnt','length_mm','location','issue','checks')}

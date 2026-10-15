@@ -1,5 +1,9 @@
 const assert=require('node:assert/strict');
 const tools=require('../static/ledger.js');
+assert.equal(tools.viewRole({kind:'PLAN'}),'MEMBERS');
+assert.equal(tools.viewRole({kind:'ISOMETRIC'}),'REFERENCE');
+assert.equal(tools.viewRole({kind:'PLAN',takeoff_role:'REVIEW'}),'REVIEW');
+assert.equal(tools.viewRole({kind:'PLAN',takeoff_role:'EXCLUDE'}),'EXCLUDE');
 const stats=tools.summarize([
     {spec:'HEA260 /EPB',member_cnt:2,length_mm:6000},
     {spec:'HEA260',member_cnt:1,length_mm:6000},
