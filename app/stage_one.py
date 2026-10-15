@@ -2,6 +2,8 @@
 import json
 import re
 import uuid
+import time
+from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from pathlib import Path
 from typing import Literal
 from pydantic import Field,model_validator
@@ -105,59 +107,101 @@ def prepare(directory,settings,emit,audit,*,reuse_saved=False):
     from .pipeline import extract,model_call,OpenAI
     from .image_workflow import freeze_images
     from .llm_runner import _api_settings
+    from .drawing_input import render_data_uri
+    from .ai_concurrency import view_concurrency
+    limit=view_concurrency(settings)
     entries,pages=extract(directory,emit,audit,render_previews=False)
     base,key,model=_api_settings(settings)
     folder=directory/'responses'/f'attempt-pages-{uuid.uuid4().hex}'
     result=StageOne(workflow='image_first',catalog_mode='ai_pages',views=[],analysis_pending=True).model_dump()
-    client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
-    try:
-        for entry,page in zip(entries,pages):
-            record=dict(page_id=page['id'],file=page['file'],page=page['page'],view_ids=[],issue='')
-            text=json.dumps({'file':page['file'],'page':page['page'],
-                'texts':[{'text':t['text'],'bbox':t['bbox']} for t in page['texts']]},ensure_ascii=False)
-            try:
-                emit(f"AI判断页面用途：{page['file']} 第{page['page']}页。")
-                assessment=model_call(client,model,_prompt('page_purpose.md')+'\n页面文字：\n'+text,
-                    {**entry,'image_max_dimension':1400},folder/f"{page['id']}_purpose.json",PageAssessment,
-                    emit=emit,audit=audit,reuse_saved=reuse_saved,reasoning_effort=settings.get('reasoning_effort','high'))
-                record.update(assessment)
-                audit.event('PAGE_PURPOSE_DECIDED',**record)
-                if record['decision']!='CONSTRUCTION':
-                    emit(f"{'跳过' if record['decision']=='SKIP' else '用途待确认'}：{page['file']} 第{page['page']}页；{record['reason']}；不生成高清截图。")
-                    continue
-                emit(f"定位有效平面/立面并提取面名与钢材种类：{page['file']} 第{page['page']}页。")
-                catalog=model_call(client,model,_prompt('construction_catalog.md')+'\n页面文字：\n'+text,
-                    {**entry,'image_max_dimension':3600},folder/f"{page['id']}_catalog.json",ConstructionCatalog,
-                    emit=emit,audit=audit,reuse_saved=reuse_saved,reasoning_effort=settings.get('reasoning_effort','high'))
-                if not catalog['views']:record['issue']='页面判为有效，但未定位到建造视图；请重试或核对。'
-                names=set()
-                for index,proposal in enumerate(catalog['views'],1):
-                    proposal=ConstructionView.model_validate(proposal).model_dump()
-                    name=normalize_view_tag(proposal['name'])
-                    identity=(proposal['kind'],name,tuple(proposal['bbox']))
-                    if identity in names:raise ValueError('同页视图区域被重复定位')
-                    names.add(identity)
-                    issues=_crop_check(proposal,page)
-                    view=View(id=f"{page['id']}-view{index:02d}",page_id=page['id'],title=proposal['title'],
-                        kind=proposal['kind'],bbox=proposal['bbox'],title_bbox=proposal['bbox'],
-                        plane_name=name,axis_labels=proposal['plane_names'],steel_types=proposal['steel_types'],
-                        fixed_label=name if proposal['kind']=='ELEVATION' else None,region_confirmed=not issues,
-                        localization={'status':'needs_review' if issues else 'checked','issues':issues,
-                            'reason':'AI定位完整视图；程序检查矩形边界与可匹配原生标题，不推断构件坐标或长度。'}).model_dump()
-                    result['views'].append(view)
-            except Exception as error:
-                record.setdefault('decision','REVIEW');record.setdefault('reason','页面用途判断未完成，需要重试。')
-                record['issue']=audit.scrub(str(error))
-                # A malformed response cannot leave a partially adopted page.
-                result['views']=[v for v in result['views'] if v['page_id']!=page['id']]
-                emit(f"页面待确认：{page['file']} 第{page['page']}页；{record['issue']}")
-                audit.event('PAGE_PREPARATION_FAILED',page_id=page['id'],error=record['issue'])
-            finally:
-                result['page_decisions'].append(record)
-                write_json(directory/'page_catalog_checkpoint.json',result)
-    finally:client.close()
+    records={};adopted={};finished=set();pending={};next_page=0
+    started=time.monotonic();workers=min(limit,len(pages))
+    audit.event('PAGE_BATCH_STARTED',configured_concurrency=limit,workers=workers,pages=len(pages))
+
+    def request(entry,page,step):
+        # Workers only call HTTP with already rendered image bytes. No PDF access,
+        # shared ledgers, checkpoint writes or shared HTTP clients.
+        contract=PageAssessment if step=='purpose' else ConstructionCatalog
+        prompt=_prompt('page_purpose.md' if step=='purpose' else 'construction_catalog.md')
+        text=json.dumps({'file':page['file'],'page':page['page'],
+            'texts':[{'text':t['text'],'bbox':t['bbox']} for t in page['texts']]},ensure_ascii=False)
+        client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
+        try:
+            return model_call(client,model,prompt+'\n页面文字：\n'+text,entry,
+                folder/f"{page['id']}_{step}.json",contract,emit=emit,audit=audit,
+                reuse_saved=reuse_saved,reasoning_effort=settings.get('reasoning_effort','high'))
+        finally:client.close()
+
+    def checkpoint():
+        result['page_decisions']=[records[i] for i in sorted(finished)]
+        result['views']=[v for i in sorted(finished) for v in adopted.get(i,[])]
+        target=directory/'page_catalog_checkpoint.json'
+        temporary=target.with_suffix('.tmp')
+        write_json(temporary,result);temporary.replace(target)
+
+    def finish(i,error=None):
+        record=records[i];page=pages[i]
+        if error is not None:
+            record.setdefault('decision','REVIEW');record.setdefault('reason','页面用途判断未完成，需要重试。')
+            record['issue']=audit.scrub(str(error));adopted.pop(i,None)
+            emit(f"页面待确认：{page['file']} 第{page['page']}页；{record['issue']}")
+            audit.event('PAGE_PREPARATION_FAILED',page_id=page['id'],error=record['issue'])
+        finished.add(i);checkpoint()
+        audit.event('PAGE_PREPARATION_FINISHED',page_id=page['id'],completed=len(finished),total=len(pages))
+        emit(f"第一阶段页面处理：{len(finished)}/{len(pages)}。")
+
+    def submit(executor,i,step):
+        page=pages[i]
+        if i not in records:records[i]=dict(page_id=page['id'],file=page['file'],page=page['page'],view_ids=[],issue='')
+        try:
+            size=1400 if step=='purpose' else 3600
+            emit(f"{'AI判断页面用途' if step=='purpose' else '定位有效平面/立面并提取面名与钢材种类'}：{page['file']} 第{page['page']}页。")
+            entry={**entries[i],'image_max_dimension':size}
+            # All PyMuPDF rendering stays on the coordinator, including previews.
+            entry['prepared_data_uri']=render_data_uri(entry,max_dimension=size)
+            future=executor.submit(request,entry,page,step)
+            pending[future]=(i,step)
+            audit.event('PAGE_REQUEST_QUEUED',page_id=page['id'],step=step,in_flight=len(pending))
+        except Exception as error:finish(i,error)
+
+    if workers:
+        with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='steel-page') as executor:
+            while next_page<len(pages) or pending:
+                while next_page<len(pages) and len(pending)<workers:
+                    submit(executor,next_page,'purpose');next_page+=1
+                if not pending:continue
+                completed,_=wait(pending,return_when=FIRST_COMPLETED)
+                for future in sorted(completed,key=lambda f:pending[f][0]):
+                    i,step=pending.pop(future);page=pages[i];record=records[i]
+                    try:
+                        response=future.result()
+                        if step=='purpose':
+                            record.update(PageAssessment.model_validate(response).model_dump())
+                            audit.event('PAGE_PURPOSE_DECIDED',**record)
+                            if record['decision']=='CONSTRUCTION':
+                                submit(executor,i,'catalog');continue
+                            emit(f"{'跳过' if record['decision']=='SKIP' else '用途待确认'}：{page['file']} 第{page['page']}页；{record['reason']}；不生成高清截图。")
+                        else:
+                            catalog=ConstructionCatalog.model_validate(response).model_dump()
+                            if not catalog['views']:record['issue']='页面判为有效，但未定位到建造视图；请重试或核对。'
+                            names=set();views=[]
+                            for index,proposal in enumerate(catalog['views'],1):
+                                name=normalize_view_tag(proposal['name'])
+                                identity=(proposal['kind'],name,tuple(proposal['bbox']))
+                                if identity in names:raise ValueError('同页视图区域被重复定位')
+                                names.add(identity);issues=_crop_check(proposal,page)
+                                views.append(View(id=f"{page['id']}-view{index:02d}",page_id=page['id'],title=proposal['title'],
+                                    kind=proposal['kind'],bbox=proposal['bbox'],title_bbox=proposal['bbox'],
+                                    plane_name=name,axis_labels=proposal['plane_names'],steel_types=proposal['steel_types'],
+                                    fixed_label=name if proposal['kind']=='ELEVATION' else None,region_confirmed=not issues,
+                                    localization={'status':'needs_review' if issues else 'checked','issues':issues,
+                                        'reason':'AI定位完整视图；程序检查矩形边界与可匹配原生标题，不推断构件坐标或长度。'}).model_dump())
+                            adopted[i]=views
+                        finish(i)
+                    except Exception as error:finish(i,error)
     refresh_catalog(result,pages)
     freeze_images(directory,result)
+    audit.event('PAGE_BATCH_FINISHED',pages=len(pages),workers=workers,elapsed_seconds=round(time.monotonic()-started,3))
     audit.event('CONSTRUCTION_CATALOG_READY',**result['catalog_summary'],
                 reason='仅有效建造视图生成300DPI裁切；钢材与面目录来自AI枚举，程序去重计数。')
     emit(f"第一阶段完成：{len(result['profile_catalog'])}种钢材，{len(result['catalog_summary']['plan_names'])}个平面，{len(result['catalog_summary']['elevation_names'])}个立面；{result['catalog_summary']['skipped_pages']}页未采用。")

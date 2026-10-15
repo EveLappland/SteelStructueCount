@@ -62,19 +62,29 @@ def create_app(root=ROOT, start_workers=True):
 
     def worker(job_id,stage,reuse_saved=False):
         with serial:
-            if not store.claim(job_id,stage):
-                return
-            audit=AuditLog(jobs/job_id,stage=stage,secrets=(credentials.get(job_id,{}).get('api_key'),os.getenv('LLM_API_KEY')))
             try:
-                execute(store,job_id,stage,jobs/job_id,credentials.get(job_id,{}),reuse_saved=reuse_saved,audit=audit)
-            except Exception as exc:
-                audit.text(jobs/job_id/'error.txt',traceback.format_exc())
-                audit.event('STAGE_FAILED',error_type=type(exc).__name__,error=str(exc))
-                logger.error('job=%s stage=%s failed: %s',job_id,stage,audit.scrub(str(exc)))
-                store.fail(job_id,stage,audit.scrub(str(exc)))
+                policy=jobs/job_id/'workflow.json'
+                automatic=json.loads(policy.read_text(encoding='utf-8')).get('auto_run',False) if policy.is_file() else False
+                while store.claim(job_id,stage):
+                    audit=AuditLog(jobs/job_id,stage=stage,secrets=(credentials.get(job_id,{}).get('api_key'),os.getenv('LLM_API_KEY')))
+                    try:
+                        execute(store,job_id,stage,jobs/job_id,credentials.get(job_id,{}),reuse_saved=reuse_saved,audit=audit)
+                        if stage==4 or not automatic:break
+                        draft=store.stage(job_id,stage)
+                        if stage==1 and not draft['data'].get('views'):
+                            store.progress(job_id,'没有有效建造视图，自动流程停止；请查看页面用途说明。');break
+                        audit.event('STAGE_AUTO_ADVANCED',pending=pending_reasons(stage,draft['data']),
+                            reason='自动模式继续处理；问题保留审计，不代表人工确认。')
+                        stage=store.approve(job_id,stage,draft['revision'],True,reason='自动模式继续，非人工工程确认。')
+                        reuse_saved=False
+                        if stage is None:break
+                    except Exception as exc:
+                        audit.text(jobs/job_id/'error.txt',traceback.format_exc())
+                        audit.event('STAGE_FAILED',error_type=type(exc).__name__,error=str(exc))
+                        logger.error('job=%s stage=%s failed: %s',job_id,stage,audit.scrub(str(exc)))
+                        store.fail(job_id,stage,audit.scrub(str(exc)));break
             finally:
-                if stage in (2,3):
-                    credentials.pop(job_id,None)
+                if stage in (3,4) or store.get(job_id)['state']=='failed':credentials.pop(job_id,None)
 
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
         if settings and stage in (1,2,3):
@@ -88,7 +98,7 @@ def create_app(root=ROOT, start_workers=True):
     @application.post('/api/jobs')
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
                    api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True),
-                   max_concurrency:int|None=Form(None,ge=1)):
+                   max_concurrency:int|None=Form(None,ge=1),auto_run:bool=Form(True)):
         pdfs=[file for file in files if file.filename and file.filename.lower().endswith('.pdf')]
         if not pdfs:
             raise HTTPException(400,'请至少上传一个 PDF。')
@@ -103,6 +113,7 @@ def create_app(root=ROOT, start_workers=True):
             except OSError as exc:
                 raise HTTPException(500,'无法保存上传文件。') from exc
         store.create(job_id)
+        (jobs/job_id/'workflow.json').write_text(json.dumps({'auto_run':auto_run}),encoding='utf-8')
         launch(job_id,1,{'base_url':base_url,'api_key':api_key,'model':model,
                         'max_concurrency':str(max_concurrency) if max_concurrency is not None else ''})
         return {'id':job_id,'state':'queued','schema_version':2}
@@ -114,6 +125,8 @@ def create_app(root=ROOT, start_workers=True):
     @application.get('/api/jobs/{job_id}')
     def status(job_id:str):
         job=store.get(job_id)
+        policy=jobs/job_id/'workflow.json'
+        job['auto_run']=json.loads(policy.read_text(encoding='utf-8')).get('auto_run',False) if policy.is_file() else False
         job['download_url']=f'/api/jobs/{job_id}/download' if job.get('workbook') else None
         job['views_download_url']=f'/api/jobs/{job_id}/views-download' if job.get('views_archive') else None
         try:
@@ -184,9 +197,13 @@ def create_app(root=ROOT, start_workers=True):
                 raise HTTPException(422,'没有有效平面或立面可交付第二阶段，请核对页面用途或重试。')
             pending=pending_reasons(stage,draft['data'])
             if pending and not body.acknowledge_pending:
-                raise HTTPException(422,'存在未确认项，请修正或明确勾选“保留待确认项继续”。')
+                raise HTTPException(422,'存在未解决问题，请修正或勾选“允许带未解决问题继续”；此操作不会排除台账行。')
+            if stage==3 and draft['data'].get('reconciliation_mode')=='group_ledger' and draft['data'].get('totals',{}).get('observation_units',0)>0 and not (draft['data'].get('resolutions') or draft['data'].get('exclusions')):
+                raise HTTPException(422,'第三阶段尚未产生AI核验结果，不能直接导出空汇总；请重试第三阶段。')
         next_stage=store.approve(job_id,stage,body.revision,body.acknowledge_pending,reason=body.reason)
         if next_stage:
+            if body.auto_run is not None:
+                (directory(job_id)/'workflow.json').write_text(json.dumps({'auto_run':body.auto_run}),encoding='utf-8')
             AuditLog(directory(job_id),stage).event('STAGE_APPROVED',revision=body.revision,
                 acknowledge_pending=body.acknowledge_pending,reason=body.reason or '用户确认。')
             launch(job_id,next_stage,body.settings)
@@ -201,6 +218,8 @@ def create_app(root=ROOT, start_workers=True):
         resume=(stage in (1,2) and previous['status'] in ('failed','interrupted') and body.reuse_saved)
         if stage==3 and body.settings.get('review_mode')=='ai':resume=body.reuse_saved
         next_stage=store.retry(job_id,stage,body.revision)
+        if body.auto_run is not None:
+            (directory(job_id)/'workflow.json').write_text(json.dumps({'auto_run':body.auto_run}),encoding='utf-8')
         launch(job_id,next_stage,body.settings,reuse_saved=resume)
         return status(job_id)
 

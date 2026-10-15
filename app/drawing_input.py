@@ -36,6 +36,8 @@ def is_primary_sheet(entry):
 
 
 def render_data_uri(entry, max_dimension=None):
+    if entry.get('prepared_data_uri'):
+        return entry['prepared_data_uri']
     if entry.get('image_path'):
         data=Path(entry['image_path']).read_bytes()
         if not data.startswith(b'\x89PNG\r\n\x1a\n'):raise ValueError('已确认视图图片必须是PNG')

@@ -5,21 +5,21 @@ function renderGroupReconciliation() {
     target.append(node('p',`已确认 ${totals.confirmed_groups} 组 / ${totals.confirmed_assemblies} 个组合实体 / ${totals.confirmed_single_members} 根单件；待核验观察 ${totals.pending_observation_units} 个，未完成来源视图 ${totals.pending_source_views} 个。`),
         node('p','修改后请保存，服务器会重新核算数量。每个结果组从各来源分配同等数量；部分重叠须拆成多个结果组。组合角钢在最终统计时展开一次。'),
         table(['钢材类型','名义长度 mm','已确认单根数量','总长度 mm'],data.summary.map(s=>[s.profile,s.length_mm,s.quantity,s.total_length_mm])));
-    const proposeButton=button('AI生成分组提案（max）',async()=>{
+    const proposeButton=button('AI重新核验并自动导出（max）',async()=>{
         try{
             if(dirty)throw Error('请先保存当前修改，再生成AI提案。');
-            await api(`/api/jobs/${jobId}/stages/3/retry`,'POST',{revision:draft.revision,reuse_saved:false,settings:{...settings(),review_mode:'ai'}});
+            await api(`/api/jobs/${jobId}/stages/3/retry`,'POST',{revision:draft.revision,reuse_saved:false,auto_run:true,settings:{...settings(),review_mode:'ai'}});
             stageKey='';await poll();
         }catch(error){showError(error);}
     });
-    proposeButton.disabled=draft.status!=='awaiting_review';target.append(proposeButton);
+    proposeButton.disabled=!['awaiting_review','approved','failed'].includes(draft.status)||['running','queued','exporting'].includes(typeof job==='undefined'?'':job.state);target.append(proposeButton);
     const candidates=node('details');candidates.append(node('summary',`匹配候选目录（${data.review.groups.length} 组）`));
     const editor=node('section'),compare=node('div','',{class:'comparison'});
     const selected=node('select');
     const ai=data.review.ai_proposal;
     if(ai) {
-        target.append(node('p',ai.validation.valid?'AI提案已通过来源分配与数量守恒检查，仍需核对图纸准确性。':`AI提案未通过本地检查：${ai.validation.error}`),
-            ...(ai.validation.totals?[node('p',`AI提案：${ai.validation.totals.confirmed_assemblies} 个构件段，组合展开后 ${ai.validation.totals.confirmed_single_members} 根；排除 ${ai.validation.totals.excluded_observation_units} 个错误观察。载入并核对保存前不计入上方已确认汇总。`)]:[]),
+        target.append(node('p',ai.applied?'AI核验结果已自动应用；本地校验只验证数量分配，不代表人工工程验收。':ai.validation.valid?'历史AI提案已通过本地检查，尚未应用。':`AI提案未通过本地检查：${ai.validation.error}`),
+            ...(ai.validation.totals?[node('p',`AI结果：${ai.validation.totals.confirmed_assemblies} 个构件段，组合展开后 ${ai.validation.totals.confirmed_single_members} 根；明确排除 ${ai.validation.totals.excluded_observation_units} 个观察。${ai.applied?'已计入上方台账。':'尚未应用到上方台账。'}`)]:[]),
             ...ai.proposal.notes.map(note=>node('p',note)),
             button('载入AI提案到可编辑草稿',()=>{
                 if(data.resolutions.length||data.exclusions.length){showError(Error('当前已有核验修改，请先通过历史保存/恢复，或明确清空结果组后再载入AI提案，避免覆盖。'));return;}

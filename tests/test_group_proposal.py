@@ -29,6 +29,18 @@ class ProposalTests(unittest.TestCase):
             self.assertFalse(result['validation']['valid'])
             self.assertIsNone(result['data'])
 
+    def test_invalid_proposal_is_repaired_by_model_without_program_editing_members(self):
+        two=fixture([row('p1','p'),row('a1','a')])
+        bad={'resolutions':[resolution(count=4)],'exclusions':[],'notes':[]}
+        good={'resolutions':[resolution()],'exclusions':[],'notes':['模型修正数量分配']}
+        with tempfile.TemporaryDirectory() as temp,patch('app.group_proposal._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=[bad,good]) as call:
+            result=propose_groups(two,Path(temp),{},lambda _:None,MagicMock())
+            self.assertEqual(call.call_count,2)
+            self.assertIn('本地检查错误',call.call_args.args[2])
+            self.assertEqual(result['proposal'],good)
+            self.assertEqual(result['data']['totals']['confirmed_single_members'],3)
+            self.assertTrue(result['validation']['valid'])
+
     def test_text_only_wire_request_never_renders_or_sends_an_image(self):
         with tempfile.TemporaryDirectory() as temp:
             directory=Path(temp);source=directory/'input.json';source.write_text('{}')

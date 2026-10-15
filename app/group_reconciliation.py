@@ -144,6 +144,7 @@ def reconcile(data,draft=None):
 
 def export_sheets(two,three):
     """Same export writer and formula escaping as the coordinate workflow."""
+    rows={r['id']:r for r in two['view_members']}
     return [
         ('Quantity Length Summary',['规格','名义长度 mm','单根数量','总长度 mm'],
          [[s['profile'],s['length_mm'],s['quantity'],s['total_length_mm']] for s in three['summary']]),
@@ -157,6 +158,11 @@ def export_sheets(two,three):
          [[r['row_id'],r['member_cnt'],r['reason']] for r in three['exclusions']]),
         ('Exceptions',['观察或视图 ID','待确认数量','问题'],
          [[r['observation_id'],r['member_cnt'],r['issues']] for r in three['exceptions']]),
+        ('Pending Register',['观察 ID','来源视图','规格','原长度 mm','未分配数量','所属面','位置','问题'],
+         [[e['observation_id'],r.get('source_view'),r.get('spec'),r.get('length_mm'),e['member_cnt'],
+           r.get('view_tags'),r.get('location'),e['issues']]
+          for e in three['exceptions'] if (r:=rows.get(e['observation_id']))]),
+        ('AI Review Notes',['说明'],[[n] for n in three.get('review',{}).get('ai_proposal',{}).get('proposal',{}).get('notes',[])]),
         ('Method Notes',['类型','说明'],[
             ['长度口径','图示参考线名义段长；不包含下料扣减。'],
             ['数量口径','确认组按来源分配；组合钢材只展开一次。待确认项不计入汇总。'],
