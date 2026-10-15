@@ -361,6 +361,9 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
     if stage in (1,2):
         contract=StageOne if stage==1 else StageTwo
         draft=contract.model_validate(data).model_dump()
+        if stage==1 and draft.get('catalog_mode')=='ai_pages':
+            from .stage_one import refresh_catalog
+            return refresh_catalog(draft,pages)
         if stage==2 and draft['recognition_mode']=='view_ledger':
             if draft.get('workflow')=='image_first' and stage_one is not None:
                 if draft['views']!=StageOne.model_validate(stage_one).model_dump()['views']:raise ValueError('第二阶段不能更改已确认的视图目录；请返回第一阶段修改。')
@@ -405,7 +408,7 @@ def validate_draft(directory, stage, data, stage_two=None,stage_one=None):
     raise ValueError('阶段必须是 1、2 或 3。')
 
 
-def extract(directory, emit,audit=None):
+def extract(directory, emit,audit=None,*,render_previews=True):
     entries=pdf_manifest(sorted((directory/'uploads').glob('*.pdf')))
     if not entries:
         raise ValueError('没有可处理的 PDF。')
@@ -416,7 +419,7 @@ def extract(directory, emit,audit=None):
         if audit:audit.event('PDF_EXTRACTED',page_id=entry['id'],filename=entry['file'],
                              text_count=len(native['texts']),vector_count=len(native['vectors']),titles=native['titles'])
         write_json(directory/'native'/f"{entry['id']}.json",native)
-        write_view_image(entry,directory/'views'/f"{entry['id']}.jpg")
+        if render_previews:write_view_image(entry,directory/'views'/f"{entry['id']}.jpg")
         pages.append(native)
     write_json(directory/'pdf_manifest.json',[{k:v for k,v in entry.items() if k!='text'} for entry in entries])
     write_json(directory/'native_index.json', [{k:p[k] for k in ('id','file','page','width_pt','height_pt','titles')}
@@ -738,6 +741,10 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
         sheets.append(('View Scope',['视图 ID','标题','用途','进入构件识别','理由','人工修改用途'],
             [[v['id'],v['title'],role(v),role(v)=='MEMBERS',v.get('filter_reason',''),v.get('filter_reviewed',False)]
              for v in stage_one['views']]))
+    if stage_one.get('catalog_mode')=='ai_pages':
+        sheets.append(('Page Decisions',['文件','页','页面用途','状态','未采用或采用理由','定位问题'],
+            [[p['file'],p['page'],p['decision'],p['status'],p['reason'],p.get('issue','')]
+             for p in stage_one['page_decisions']]))
     for name,headers,rows in sheets:
         sheet=workbook.create_sheet(name)
         sheet.append(headers)

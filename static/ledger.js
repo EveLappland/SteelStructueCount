@@ -5,7 +5,7 @@
         const level=name.match(/^EL\.?\s*([+-]?\d+(?:\.\d+)?)\s*(?:\(\s*([A-Za-z][\w -]*)\s*\))?$/i);
         return level?'EL.'+level[1]+(level[2]?'('+level[2].trim().toUpperCase()+')':''):name;
     }
-    const tagOf=view=>normalizeTag(view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title);
+    const tagOf=view=>normalizeTag(view.plane_name||(view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title));
     const viewRole=view=>view.kind==='ISOMETRIC'?(view.takeoff_role==='EXCLUDE'?'EXCLUDE':'REFERENCE'):(view.takeoff_role||'MEMBERS');
     function summarize(rows) {
         const groups=new Map();let quantity=0,unknownQuantity=0;

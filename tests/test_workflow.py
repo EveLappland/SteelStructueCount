@@ -116,6 +116,12 @@ class ApiWorkflowTest(unittest.TestCase):
             response_path.parent.mkdir(parents=True,exist_ok=True)
             response_path.write_text('{"mock":true}',encoding='utf-8')
             if contract is ViewResponse:return {'views':data['views']}
+            from app.stage_one import PageAssessment,ConstructionCatalog
+            if contract is PageAssessment:return {'decision':'CONSTRUCTION','reason':'包含平面和立面建造布置图。'}
+            if contract is ConstructionCatalog:
+                return {'views':[{'title':v['title'],'name':v.get('fixed_label') or 'EL.100.000(TOS)',
+                    'kind':v['kind'],'bbox':v['bbox'],'plane_names':['A','EL.100.000(TOS)'],
+                    'steel_types':['HEA240','HEA260']} for v in data['views']]}
             from app.member_recognition import MemberResponse
             if contract is MemberResponse:
                 import json
@@ -128,9 +134,9 @@ class ApiWorkflowTest(unittest.TestCase):
         # Legacy drafts remain valid for geometry/version/export regressions.
         self.mock_call=mock_call
         self.legacy_draft=data
-        with patch('app.pipeline.catalog_only',side_effect=lambda directory,emit,audit:
-                   self._legacy_catalog(directory,data,emit,audit)):
-            self.app.state.worker(self.job_id,1)
+        store=self.app.state.store;store.claim(self.job_id,1)
+        seed=self._legacy_catalog(self.app.state.jobs_directory/self.job_id,data,lambda _:None,None)
+        store.complete_stage(self.job_id,1,seed)
 
     def _legacy_catalog(self,directory,data,emit,audit):
         from app.pipeline import extract
@@ -139,6 +145,7 @@ class ApiWorkflowTest(unittest.TestCase):
 
     def test_image_catalog_then_recognition_and_upstream_invalidation(self):
         from app.member_recognition import MemberResponse
+        from app.stage_one import PageAssessment,ConstructionCatalog
         self.legacy_draft['views'][1]['title']='ELEVATION ON ALIGNMENT A'
         for index,view in enumerate(self.legacy_draft['views']):
             view['bbox']=[0,0,.49,1] if index==0 else [.51,0,1,1]
@@ -149,7 +156,7 @@ class ApiWorkflowTest(unittest.TestCase):
         with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
             self.app.state.worker(identity,1)
             self.assertTrue(model.called)
-            self.assertTrue(all(call.args[5] is ViewResponse for call in model.call_args_list))
+            self.assertEqual([call.args[5] for call in model.call_args_list],[PageAssessment,ConstructionCatalog])
             self.assertTrue(all(call.kwargs['reasoning_effort']=='high' for call in model.call_args_list))
         stage=self.client.get(base+'/stages/1').json()
         self.assertEqual(stage['status'],'awaiting_review')

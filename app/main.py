@@ -127,7 +127,7 @@ def create_app(root=ROOT, start_workers=True):
     @application.get('/api/jobs/{job_id}/stages/{stage}')
     def get_stage(job_id:str,stage:int):
         result=store.stage(job_id,stage)
-        if stage in (1,2) and 'views' in result['data']:
+        if stage in (1,2) and 'views' in result['data'] and result['data'].get('catalog_mode')!='ai_pages':
             # Enrich existing v2 tasks without rewriting their approved history.
             inventory=build_inventory(result['data'],load_native(directory(job_id)))
             result['data']['discovery_inventory']=inventory
@@ -180,6 +180,8 @@ def create_app(root=ROOT, start_workers=True):
             try:view_concurrency({**credentials.get(job_id,{}),**{k:v for k,v in body.settings.items() if v}})
             except ValueError as error:raise HTTPException(422,str(error)) from error
         if draft['status']!='approved':
+            if stage==1 and draft['data'].get('catalog_mode')=='ai_pages' and not draft['data'].get('views'):
+                raise HTTPException(422,'没有有效平面或立面可交付第二阶段，请核对页面用途或重试。')
             pending=pending_reasons(stage,draft['data'])
             if pending and not body.acknowledge_pending:
                 raise HTTPException(422,'存在未确认项，请修正或明确勾选“保留待确认项继续”。')
@@ -254,6 +256,10 @@ def create_app(root=ROOT, start_workers=True):
                 if view.get('image_file'):allowed.add(view['image_file'])
                 allowed.update(view.get('detail_files',[]))
         if path.resolve().parent!=(folder/'views').resolve():raise HTTPException(404,'未找到图纸预览。')
+        if filename in {p['id']+'.jpg' for p in native_index(job_id)} and not path.is_file():
+            from .drawing_input import write_view_image
+            entry=next((e for e in json.loads((folder/'pdf_manifest.json').read_text(encoding='utf-8')) if e['id']+'.jpg'==filename),None)
+            if entry:write_view_image(entry,path)
         if filename not in allowed or not path.is_file():
             raise HTTPException(404,'未找到图纸预览。')
         return FileResponse(path,media_type='image/png' if path.suffix=='.png' else 'image/jpeg')

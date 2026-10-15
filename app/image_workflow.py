@@ -19,7 +19,7 @@ from .native_pdf import write_json,inside
 from .discovery_inventory import labels
 from .geometry import section
 from .ai_concurrency import view_concurrency
-from .view_filter import apply_filter,role
+from .view_filter import role
 
 
 def detail_images(directory,filename):
@@ -42,6 +42,7 @@ def detail_images(directory,filename):
 def freeze_images(directory,data):
     entries={e['id']:e for e in json.loads((directory/'pdf_manifest.json').read_text(encoding='utf-8'))}
     for view in data['views']:
+        if role(view)!='MEMBERS':continue
         filename=view.get('image_file','')
         if Path(filename).name!=filename:view['image_file']='';filename=''
         current=directory/'views'/filename
@@ -59,19 +60,8 @@ def freeze_images(directory,data):
 
 
 def prepare_catalog(directory,settings,emit,audit,*,reuse_saved=False):
-    from .pipeline import catalog_only,discover,load_native
-    seed=catalog_only(directory,emit,audit)
-    # Archived coordinate drafts remain supported for legacy imports/tests.
-    if seed.get('observations'):return seed
-    emit('第一阶段：定位独立视图，准备高清裁切和逐视图轴线或面名称目录。')
-    result=discover(directory,settings,emit,reuse_saved=reuse_saved,audit=audit,seed=seed,regions_only=True)
-    for view in result['views']:view['filter_reviewed']=False
-    apply_filter(result,load_native(directory),audit)
-    freeze_images(directory,result)
-    emit('第一阶段用途过滤：'+json.dumps(result['view_filter_summary']['counts'],ensure_ascii=False))
-    audit.event('VIEW_CATALOG_PREPARED',view_count=len(result['views']),axis_count=result['axis_catalog']['axis_count'],
-                reason='第一阶段定位视图及Alignment/标高平面名称，不调用构件识别；确认后图片与目录供第二阶段使用。')
-    return result
+    from .stage_one import prepare
+    return prepare(directory,settings,emit,audit,reuse_saved=reuse_saved)
 
 
 def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
@@ -87,6 +77,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     folder=directory/'responses'/f'attempt-images-{uuid.uuid4().hex}'
     result=StageTwo(**{**one,'analysis_pending':False},recognition_mode='view_ledger').model_dump()
     result['warnings']=[]
+    page_warnings=[w for w in one.get('warnings',[]) if w.startswith('页面待确认：')]
     identities=[v['id'] for v in one['views']]
     if len(identities)!=len(set(identities)):raise ValueError('视图ID重复，不能安全保存并发识别响应。')
     prepared=[]
@@ -132,7 +123,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         # catalog order, regardless of the order API responses arrive in.
         result['view_members']=[row for item in prepared for row in item['rows']]
         result['view_analysis']=[dict(item['status']) for item in prepared]
-        result['warnings']=[warning for item in prepared for warning in item['warnings']]
+        result['warnings']=page_warnings+[warning for item in prepared for warning in item['warnings']]
         target=directory/'image_recognition_checkpoint.json'
         temporary=target.with_suffix('.tmp')
         write_json(temporary,result);temporary.replace(target)
