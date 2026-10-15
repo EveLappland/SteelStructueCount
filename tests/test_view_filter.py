@@ -9,7 +9,8 @@ from app.native_pdf import extract_page,write_json
 from app.audit import AuditLog
 from app.group_dedup import build_group_review
 from app.member_recognition import validate_ledger
-from app.pipeline import model_schema,ViewResponse,validate_draft
+from app.pipeline import model_schema,ViewResponse,validate_draft,discover,parse_model_content
+import json
 from test_workflow import pdf_bytes
 
 
@@ -53,6 +54,40 @@ class ViewFilterTests(unittest.TestCase):
         self.assertIn('takeoff_role',schema['required'])
         self.assertIn('filter_reason',schema['required'])
         self.assertNotIn('filter_reviewed',schema['properties'])
+
+    def test_excluded_local_section_accepts_partial_axes_but_members_and_boxes_stay_strict(self):
+        raw=dict(id='local',page_id='p',title='SECTION Q',kind='ELEVATION',bbox=[.6,.1,.95,.6],
+            title_bbox=[.65,.5,.85,.55],visible_axes=['Z'],fixed_axis=None,
+            takeoff_role='EXCLUDE',filter_reason='仅柱脚连接剖面，不是完整型钢构件。')
+        result=parse_model_content(json.dumps({'views':[raw]}),ViewResponse,{'id':'p'})
+        self.assertEqual(result['views'][0]['visible_axes'],['Z'])
+        with self.assertRaises(ValueError):View.model_validate({**raw,'takeoff_role':'MEMBERS'})
+        self.assertEqual(View.model_validate({**raw,'takeoff_role':'REVIEW'}).visible_axes,['Z'])
+        with self.assertRaises(ValueError):View.model_validate({**raw,'bbox':[.9,.1,.6,.6]})
+
+    def test_extra_details_survive_native_catalog_reconciliation_including_detail_only_page(self):
+        for has_native in (True,False):
+            with self.subTest(has_native=has_native),tempfile.TemporaryDirectory() as temp:
+                directory=Path(temp)
+                title={'title':'PLAN AT EL.5.000(TOS)','kind':'PLAN','title_bbox':[.1,.55,.4,.6],
+                    'elevation_m':5,'elevation_basis':'TOS','alignment':None,'evidence_id':'t1'}
+                page=dict(id='p',file='arbitrary.pdf',page=1,width_pt=1000,height_pt=1000,vectors=[],
+                    titles=[title] if has_native else [],texts=[dict(id='t1',page_id='p',kind='TEXT',text=title['title'],bbox=title['title_bbox']),
+                    dict(id='t2',page_id='p',kind='TEXT',text='SECTION Q',bbox=[.65,.5,.85,.55])])
+                main=View(id='native',page_id='p',title=title['title'],kind='PLAN',bbox=[.1,.1,.4,.6],
+                    title_bbox=title['title_bbox'],structure_bbox=[.15,.15,.35,.5],region_confirmed=False,
+                    evidence_ids=['t1']).model_dump()
+                detail=View(id='extra',page_id='p',title='SECTION Q',kind='ELEVATION',bbox=[.6,.1,.95,.6],
+                    structure_bbox=[.65,.15,.9,.48],title_bbox=[.65,.5,.85,.55],visible_axes=['Z'],
+                    evidence_ids=['t2'],takeoff_role='EXCLUDE',filter_reason='柱脚连接剖面，非完整构件').model_dump()
+                write_json(directory/'pdf_manifest.json',[dict(id='p',file='arbitrary.pdf',page=1,source_path='unused.pdf')])
+                seed=StageOne(views=[main] if has_native else [],analysis_pending=True).model_dump()
+                with patch('app.pipeline.load_native',return_value=[page]),patch('app.pipeline._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',return_value={'views':([main] if has_native else [])+[detail]}):
+                    result=discover(directory,{},lambda _:None,audit=AuditLog(directory,1),seed=seed,regions_only=True)
+                excluded=[v for v in result['views'] if v['takeoff_role']=='EXCLUDE']
+                self.assertEqual(len(excluded),1)
+                self.assertEqual(excluded[0]['visible_axes'],['Z'])
+                self.assertEqual(result['view_filter_summary']['counts']['EXCLUDE'],1)
 
     def test_filtered_views_make_no_calls_and_do_not_become_missing_sources(self):
         with tempfile.TemporaryDirectory() as temp:

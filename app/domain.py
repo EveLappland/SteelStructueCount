@@ -88,7 +88,9 @@ class View(Contract):
         for box in (self.bbox, self.title_bbox,*([self.structure_bbox] if self.structure_bbox is not None else [])):
             if not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
                 raise ValueError('视图区域必须是有效的整页归一化矩形')
-        if self.kind != 'ISOMETRIC' and self.visible_axes:
+        # Plate sections and other non-counting reference details may have
+        # local/partial directions; they do not define a project member frame.
+        if self.kind != 'ISOMETRIC' and self.takeoff_role == 'MEMBERS' and self.visible_axes:
             if len(set(self.visible_axes)) != 2 or self.fixed_axis in self.visible_axes:
                 raise ValueError('正投影视图需两个显示方向和一个独立固定方向')
         return self

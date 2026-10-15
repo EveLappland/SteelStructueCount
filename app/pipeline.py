@@ -514,9 +514,11 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
             {**entry,'image_max_dimension':3600},response_folder/f"{entry['id']}_views.json",ViewResponse)
         if seed is not None:
             reconciled=[]
+            matched=set()
             for approved in approved_views:
                 proposed=next((v for v in payload['views'] if v['title']==approved['title'] or
                     set(v['evidence_ids'])&set(approved['evidence_ids'])),None)
+                if proposed is not None:matched.add(proposed['id'])
                 if approved.get('region_confirmed',True):proposed=approved
                 if proposed is None:
                     warnings.append(f"第二阶段未定位已确认目录视图：{approved['title']}，保留待确认。")
@@ -526,6 +528,18 @@ def discover(directory, settings, emit, *, reuse_saved=False,audit=None,seed=Non
                                    'elevation_m':approved.get('elevation_m') if approved.get('elevation_m') is not None else proposed.get('elevation_m'),
                                    'elevation_basis':approved.get('elevation_basis') or proposed.get('elevation_basis',''),
                                    'fixed_label':approved.get('fixed_label') or proposed.get('fixed_label')})
+            if regions_only:
+                for proposed in payload['views']:
+                    if proposed['id'] in matched:continue
+                    # Preserve independently located details and their scope
+                    # decisions even when native title patterns do not list them.
+                    if role(proposed)=='MEMBERS':
+                        proposed={**proposed,'takeoff_role':'REVIEW','filter_reviewed':False,
+                            'filter_reason':'模型提出额外构件视图，但未匹配到原生目录标题；请核对用途与区域。 '+proposed.get('filter_reason','')}
+                    proposed={**proposed,'id':f"{entry['id']}-extra{len(reconciled)+1:03d}",'page_id':entry['id']}
+                    reconciled.append(proposed)
+                    if audit:audit.event('ADDITIONAL_VIEW_RETAINED',view_id=proposed['id'],title=proposed['title'],
+                        takeoff_role=proposed['takeoff_role'],reason='原生标题规则未列出的视图仍保留分类与证据，不静默丢弃。')
             payload={'views':reconciled}
         missing=repair_model_evidence(payload,native_evidence,aliases,audit)
         if missing:
