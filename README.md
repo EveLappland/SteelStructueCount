@@ -1,5 +1,9 @@
 # LLM Count v2
 
+新任务默认自动运行三个阶段并导出Excel，无需人工分组或逐阶段点击。网页勾选“逐阶段暂停”或创建API传 `auto_run=false` 可暂停检查；不传则为true。执行策略保存在任务 `workflow.json`，不包含API凭据；旧任务保持原暂停策略。第三阶段始终调用后端AI，自动应用通过来源分配与数量守恒检查的结果；检查失败会把提案和错误交给AI最多修正两次，仍失败则明确报错，不导出空汇总冒充成功。跨视图关系不确定时，提示模型按原规格、长度独立保留并标注风险，不由本地程序或开发者补配、排除以对齐答案。缺失长度等未解决观察保留在 `Pending Register`、`Observation Audit` 和 `Exceptions`，不伪造长度；已采用组进入数量汇总。因此自动结果可能多计或仍有缺项，自动流程通过不等同于工程验收。
+
+“允许带未解决问题继续”仅放行阶段流转，不修改、排除或确认任何台账行；数量仅由第三阶段实际分配结果决定。新任务自动模式无需勾选此框。旧的空导出任务可以在第三阶段点击“AI重新核验并自动导出（max）”，后端重新执行第三阶段并保存历史；阶段重试/确认API可传 `auto_run=true` 切换为后续自动执行。
+
 从结构钢材 PDF 建立可追溯的逐根台账。保留 FastAPI、原生 JavaScript、PyMuPDF、OpenAI 兼容 API 和 openpyxl；第一阶段定位视图、绑定轴线并冻结高清图片；第二阶段按提示词将图片、规格/视图/轴线目录及当前裁切区域内的文字和矢量辅助证据交给视觉模型，程序校验台账。
 
 ## 环境与启动（Windows / PowerShell）
@@ -21,7 +25,7 @@ uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-第一阶段定位视图和第二阶段识图均需要视觉 API。在 `.env` 填写 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，或在网页临时填写。模型需支持图片输入以及 `response_format: json_object`。网页提供的 Key 不写入 SQLite、任务文件或导出包，仅在内存中保留至第二阶段结束，重启/第二阶段重试需重新填写或使用 `.env`。
+第一、第二阶段需要视觉API，第三阶段调用同一配置的文本API进行核验去重。在 `.env` 填写 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，或在网页临时填写。模型需支持图片输入以及 `response_format: json_object`。网页提供的 Key 不写入 SQLite、任务文件或导出包，仅在内存中保留至第三阶段/自动导出结束；重启后需重新填写或使用 `.env`。
 
 DeepSeek 官方 API 的图纸任务使用 `deepseek-flash`，官方视觉说明：https://api-docs.deepseek.com/guides/vision/ 。首次计算默认 `reasoning_effort=high`，点击“重试/重新计算”使用 `max`，两者均显式开启 thinking；输出 token 上限分别为 65536、131072，包含思考与最终回答。实际发送参数保存在任务日志中。重算请求会留下历史记录，重启后仍使用 `max`；旧 low 响应因请求签名不同不会复用。`xhigh` 在该 API 映射为 high，更高档应使用 max，见 https://api-docs.deepseek.com/guides/thinking_mode/ 。`deepseek-v4-pro` 不在该官方视觉支持列表；旧 Pro 响应保留用于诊断，不应用作视觉验收基准。
 
@@ -117,7 +121,7 @@ DeepSeek 官方视觉说明指出，大图推理前会按比例缩小至约 1300
 
 界面修改需填写修改理由。高级 JSON 编辑可调整完整数据和证据 ID；新台账允许人工修正数量、长度和构件位置，并重新执行字段与目录校验；不会用旧坐标逻辑重算这些值。历史中的人工草稿或重试提案可载入后另存为新版本。旧台账的 `basis` 在网页历史依据中保留，保存时记为 `legacy_basis`，不会猜填为 `location`；新模型响应必须使用六字段新结构，旧任务和历史文件不自动改写。
 
-第一阶段目录由原生文字证据去重生成，独立于首尾、坐标和候选构件识别是否成功。`data.discovery_inventory` 保存规格、证据、视图目录和数量；模型提出但没有规格文字证据的项目另列为待确认，不增加已提取规格种数。已有 v2 任务读取时也会生成目录，不改变已确认版本或旧导出。当前五份验收图纸应输出 16 种规格、5 个平面、7 个立面和 1 个概览。
+新流程第一阶段目录来自AI枚举，详见上方 `catalog_mode=ai_pages` 说明。仅历史任务仍使用原生文字生成 `data.discovery_inventory`，读取时不改写已确认版本或旧导出。
 
 构件识别直接读取用户编辑的 `app/prompts/stage_two_members.md`，不附加旧的坐标/端部提示词。`stage_one.md` 只保留为视图定位及历史模块说明；实际请求提示词与契约随日志保存，变化参与缓存签名。
 

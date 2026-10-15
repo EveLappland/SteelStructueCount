@@ -815,14 +815,19 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
         two=store.stage(job_id,2)['data']
         if two.get('recognition_mode')=='view_ledger':
             result=reconcile(two)
-            emit(f"第三阶段已生成 {len(result['review']['groups'])} 个待核验组；按来源分配确认后计入最终数量。")
+            emit(f"第三阶段已生成 {len(result['review']['groups'])} 个匹配候选组，正在调用AI核验去重。")
             audit.event('GROUP_REVIEW_GENERATED',source_hash=result['source_hash'],
                         **result['review']['summary'])
-            if settings.get('review_mode')=='ai':
-                from .group_proposal import propose_groups
-                proposal=propose_groups(two,directory,settings,emit,audit,reuse_saved=reuse_saved)
-                result['review']['ai_proposal']={k:proposal[k] for k in ('proposal','validation','folder')}
-                emit('AI分组提案已保存，尚未确认；请核对后载入草稿。')
+            from .group_proposal import propose_groups
+            proposal=propose_groups(two,directory,settings,emit,audit,reuse_saved=reuse_saved)
+            if not proposal['validation']['valid']:
+                raise ValueError('AI核验结果未通过本地检查，不能以空结果替代：'+proposal['validation']['error'])
+            result=proposal['data']
+            result['review']['ai_proposal']={k:proposal[k] for k in ('proposal','validation','folder')}
+            result['review']['ai_proposal']['applied']=True
+            audit.event('GROUP_PROPOSAL_APPLIED',source_hash=result['source_hash'],**result['totals'],
+                        reason='自动采用通过数量分配校验的AI结果；不代表人工工程验收。')
+            emit(f"AI核验完成：{len(result['members'])}根，{result['totals']['pending_observation_units']}个观察待处理；结果已自动载入台账。")
         else:
             result=match_entities(two)
             for match in result['matches']+result['conflicts']:audit.event('ENTITY_MATCH_EVALUATED',**match)

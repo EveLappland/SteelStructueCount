@@ -34,18 +34,34 @@ def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
     guidance=(Path(__file__).parent/'prompts/stage_three_groups.md').read_text(encoding='utf-8')
     base,key,model=_api_settings(settings)
     emit('AI生成分组核验提案：只发送第二阶段台账与面目录，不发送验收参考答案。')
-    proposal=model_call(OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1),model,
-        guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':')),
-        {'id':'group-review','page':1,'source_path':str(snapshot),'text_only':True},
-        folder/'proposal.json',GroupProposal,emit=emit,audit=audit,reasoning_effort='max',reuse_saved=reuse_saved)
-    draft=reconcile(two);draft.update(resolutions=proposal['resolutions'],exclusions=proposal['exclusions'])
+    prompt=guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':'))
+    client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
     try:
-        result=reconcile(two,draft)
-        validation={'valid':True,'totals':result['totals']}
-    except ValueError as error:
-        result=None;validation={'valid':False,'error':str(error)}
+        for attempt in range(3):
+            path=folder/('proposal.json' if attempt==0 else f'proposal_repair{attempt}.json')
+            proposal=model_call(client,model,prompt,
+                {'id':'group-review','page':1,'source_path':str(snapshot),'text_only':True},
+                path,GroupProposal,emit=emit,audit=audit,reasoning_effort='max',reuse_saved=reuse_saved)
+            draft=reconcile(two);draft.update(resolutions=proposal['resolutions'],exclusions=proposal['exclusions'])
+            try:
+                result=reconcile(two,draft)
+                # No local invention of groups. Ask the model to account for
+                # every usable row, rather than silently exporting an empty ledger.
+                invalid={r['row_id'] for r in result['review']['invalid_rows']}
+                remaining=[e for e in result['exceptions'] if e['observation_id'] not in invalid and e.get('member_cnt') and any(
+                    r['id']==e['observation_id'] and r.get('length_mm') and r.get('view_tags')
+                    for r in two['view_members'])]
+                if remaining:raise ValueError('仍有具备长度的观察未分配：'+json.dumps(remaining,ensure_ascii=False))
+                validation={'valid':True,'totals':result['totals']};break
+            except ValueError as error:
+                result=None;validation={'valid':False,'error':str(error)}
+                audit.event('GROUP_PROPOSAL_REJECTED',attempt=attempt,error=str(error))
+                if attempt<2:
+                    emit(f'AI分组本地检查未通过，正在请求修正（{attempt+1}/2）。')
+                    prompt=guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':'))+'\n上次提案：\n'+json.dumps(proposal,ensure_ascii=False)+'\n本地检查错误：\n'+str(error)+'\n修正并返回完整结果，不只返回差异。'
+    finally:client.close()
     write_json(folder/'validation.json',validation)
     if result is not None:write_json(folder/'validated_proposal.json',result)
     audit.event('GROUP_PROPOSAL_CHECKED',source_hash=bundle['source_hash'],proposal_file=str(folder/'proposal.json'),
-                **validation,reason='本地检查来源分配与数量守恒；这不证明图纸识别准确，未修改或确认任务。')
+                **validation,reason='本地检查来源分配与数量守恒；通过后由阶段执行器自动采用，不代表工程准确性验收。')
     return {'proposal':proposal,'validation':validation,'data':result,'folder':str(folder)}

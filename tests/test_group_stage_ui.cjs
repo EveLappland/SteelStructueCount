@@ -45,8 +45,9 @@ find('载入AI提案到可编辑草稿').onclick();
 assert.equal(context.draft.data.resolutions[0].id,'ai-result');
 assert.notEqual(context.draft.data.resolutions[0],resolution);
 (async()=>{
-    await find('AI生成分组提案（max）').onclick();assert.equal(calls.length,0);
-    context.dirty=false;await find('AI生成分组提案（max）').onclick();
+    await find('AI重新核验并自动导出（max）').onclick();assert.equal(calls.length,0);
+    context.dirty=false;await find('AI重新核验并自动导出（max）').onclick();
     assert.equal(calls[0][2].settings.review_mode,'ai');assert.equal(calls[0][2].reuse_saved,false);
+    assert.equal(calls[0][2].auto_run,true);
     assert.ok(changes>0);console.log('Group review controls, frozen images and proposal overwrite protection passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -4,7 +4,7 @@
 <body><main class="shell">
 <header><div><p class="eyebrow">PDF → 观察 → 坐标实体</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
 <section class="workspace">
-<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>第一阶段定位视图、提取轴线并生成高清裁切；确认后第二阶段识图生成钢材台账。请配置视觉模型，或使用已有 .env 设置。</p>
+<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认由AI连续完成页面筛选、高清裁切、构件识别及核验去重，自动导出台账。疑点保留在审计与待处理清单；可选人工修改。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，手动检查后继续</label>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
 <details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><label>AI 请求并发数<input id="max-concurrency" type="number" min="1" step="1" placeholder="默认3；设为1串行执行"></label><small>第一阶段按页并发判断与定位，第二阶段按视图并发识别；PDF渲染串行执行。网页设置仅用于本次任务；重启后使用 .env 或重新填写。</small></details>
 <p id="upload-error" role="alert" hidden></p><button id="submit" type="submit">开始第一阶段</button></form>
@@ -17,7 +17,7 @@
 <div id="warnings" class="warnings"></div>
 <div id="stage-content"></div>
 <details class="advanced"><summary>完整数据与历史（可恢复人工草稿）</summary><p>高级编辑使用相同版本校验；候选长度和数量会由程序重新计算。</p><textarea id="json-editor" spellcheck="false"></textarea><button id="apply-json" type="button">将 JSON 应用到草稿</button><div id="history"></div></details>
-<div class="review-actions"><label>修改说明<input id="edit-reason" placeholder="说明首尾、尺寸或匹配的修改依据"></label><button id="save" type="button">保存修改并重新计算</button><label class="toggle"><input id="pending" type="checkbox">保留待确认项继续（不计入已确认汇总）</label><button id="approve" type="button">确认并进入下一阶段</button></div>
+<div class="review-actions"><label>修改说明<input id="edit-reason" placeholder="说明首尾、尺寸或匹配的修改依据"></label><button id="save" type="button">保存修改并重新计算</button><label class="toggle"><input id="pending" type="checkbox">允许带未解决问题继续（此勾选不会排除台账行；未分配项保留在待处理清单）</label><button id="approve" type="button">继续下一阶段</button></div>
 </section>
 <details id="task-trace" class="advanced" hidden><summary>处理依据与 API 日志</summary><p>查看请求耗时、响应校验、证据修复、长度计算和匹配原因。日志不包含 API Key。</p><button id="refresh-trace" type="button">刷新日志</button><a id="download-trace" class="download">下载任务日志</a><div id="trace-content"></div></details>
 </main><script src="/ledger.js"></script><script src="/group_stage.js"></script><script src="/app.js"></script></body></html>

@@ -43,7 +43,7 @@ def main():
             execute(store,identity,current,folder,{'reasoning_effort':'max','review_mode':'ai'})
             report['timings_seconds'][f'stage_{current}']=time.perf_counter()-t
             stage=store.stage(identity,current)
-            if current==3:
+            if current==3 and not stage['data']['review']['ai_proposal'].get('applied'):
                 proposed=stage['data']['review']['ai_proposal']
                 if not proposed['validation']['valid']:raise ValueError('第三阶段提案本地验证失败：'+proposed['validation'].get('error',''))
                 draft={**stage['data'],**{k:proposed['proposal'][k] for k in ('resolutions','exclusions')}}

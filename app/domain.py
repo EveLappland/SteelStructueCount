@@ -235,3 +235,4 @@ class StageAction(Contract):
     settings: dict[str, str] = Field(default_factory=dict)
     reuse_saved: bool = True
     reason: str = ''
+    auto_run: bool | None = None

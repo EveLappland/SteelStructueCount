@@ -109,7 +109,7 @@ class ApiWorkflowTest(unittest.TestCase):
         self.client=TestClient(self.app)
         self.client.__enter__()
         self.job_id=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
-            data={'api_key':'secret-test-key','base_url':'https://example.test','model':'test'}).json()['id']
+            data={'api_key':'secret-test-key','base_url':'https://example.test','model':'test','auto_run':'false'}).json()['id']
         self.base=f'/api/jobs/{self.job_id}'
         data=prepare_mock_data()
         def mock_call(client,model,prompt,entry,response_path,contract,**kwargs):
@@ -151,7 +151,7 @@ class ApiWorkflowTest(unittest.TestCase):
             view['bbox']=[0,0,.49,1] if index==0 else [.51,0,1,1]
             view['structure_bbox']=[.06,.2,.4,.4] if index==0 else [.55,.2,.9,.4]
         identity=self.client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
-                                  data={'base_url':'https://example.test','api_key':'catalog-test-key','model':'test','max_concurrency':'2'}).json()['id']
+                                  data={'base_url':'https://example.test','api_key':'catalog-test-key','model':'test','max_concurrency':'2','auto_run':'false'}).json()['id']
         base=f'/api/jobs/{identity}'
         with patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',side_effect=self.mock_call) as model:
             self.app.state.worker(identity,1)
@@ -213,22 +213,31 @@ class ApiWorkflowTest(unittest.TestCase):
         # The image ledger now reaches a separate group reconciliation stage.
         response=self.client.post(base+'/stages/2/approve',json={'revision':edit.json()['revision'],'acknowledge_pending':True})
         self.assertEqual(response.status_code,200,response.text)
-        self.app.state.worker(identity,3)
+        from app.group_reconciliation import reconcile
+        def automatic_proposal(two,*args,**kwargs):
+            data=reconcile(two)
+            data['resolutions']=[{'id':f'auto-{i}','spec':r['spec'],'view_tags':r['view_tags'],
+                'length_mm':r['length_mm'],'member_cnt':r['member_cnt'],
+                'allocations':[{'row_id':r['id'],'member_cnt':r['member_cnt']}],
+                'reason':'模拟AI：无法确定重复关系，独立保留'} for i,r in enumerate(two['view_members'])]
+            data=reconcile(two,data)
+            return {'proposal':{'resolutions':data['resolutions'],'exclusions':[],'notes':['待原图核对']},
+                    'validation':{'valid':True},'data':data,'folder':'responses/test'}
+        with patch('app.group_proposal.propose_groups',side_effect=automatic_proposal):self.app.state.worker(identity,3)
         third=self.client.get(base+'/stages/3').json()
         self.assertEqual(third['data']['reconciliation_mode'],'group_ledger')
-        self.assertEqual(third['data']['members'],[])
+        self.assertTrue(third['data']['members'])
+        self.assertTrue(third['data']['review']['ai_proposal']['applied'])
         ai_retry=self.client.post(base+'/stages/3/retry',json={'revision':third['revision'],
             'reuse_saved':False,'settings':{'review_mode':'ai'}})
         self.assertEqual(ai_retry.status_code,200,ai_retry.text)
-        with patch('app.group_proposal.propose_groups',return_value={
-            'proposal':{'resolutions':[],'exclusions':[],'notes':['待原图核对']},
-            'validation':{'valid':True},'data':None,'folder':'responses/test'}) as propose:
+        with patch('app.group_proposal.propose_groups',side_effect=automatic_proposal) as propose:
             self.app.state.worker(identity,3)
             self.assertEqual(propose.call_args.args[2]['review_mode'],'ai')
             self.assertFalse(propose.call_args.kwargs['reuse_saved'])
         third=self.client.get(base+'/stages/3').json()
         self.assertEqual(third['data']['review']['ai_proposal']['proposal']['notes'],['待原图核对'])
-        self.assertFalse(third['data']['resolutions'])
+        self.assertTrue(third['data']['resolutions'])
         from app.member_recognition import view_tag
         group=third['data'];source=edit.json()['data']
         group['review']['ai_proposal']['proposal']['notes']=['伪造的模型说明']
