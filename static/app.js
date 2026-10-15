@@ -1,7 +1,7 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
 const stageNames = {1:'视图、轴线与高清裁切',2:'图片识别钢材台账',3:'跨视图匹配与单根统计'};
-const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成'};
+const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, activeObservation=null, clickMode='', evidenceFocus=null, manualTargets=[], matchSource=null;
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
@@ -177,9 +177,9 @@ function renderViewLedger() {
     }
     target.append(overview);
     target.append(table(['视图','识别状态','标签数','构件段数（未去重）','规格覆盖差异'],data.view_analysis.map(a=>[
-        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,a.status,a.label_count,a.member_cnt,
+        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,a.label_count,a.member_cnt,
         (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}个候选段`).join('；')])));
-    const choices=data.views.filter(v=>v.kind!=='ISOMETRIC');
+    const choices=data.views.filter(v=>LedgerTools.viewRole(v)==='MEMBERS');
     const panel=node('section');
     panel.addEventListener('input',updateSummaries);
     function show(id) {
@@ -211,9 +211,14 @@ function renderViewLedger() {
 
 function renderPreparedCatalog() {
     const data=draft.data,target=$('#stage-content'),panel=node('section');
-    target.append(node('p','第一阶段请核对高清裁切、标题及轴线或面名称。名称表示Alignment立面或EL标高平面，图中的线是这些面在当前视图中的示意。第二阶段使用确认图片、目录、提示词和当前视图的辅助证据。'));
+    target.append(node('p','第一阶段请核对高清裁切、标题、轴线或面名称及视图用途。只有“构件识别”进入第二阶段；参考和排除视图保留证据，待确认用途会明确列出，不能作为零根验收。过滤按每个视图进行，同一PDF可以包含不同用途。'));
     const catalog=data.axis_catalog||{axis_count:0,per_view:{}};
     target.append(node('p',`共 ${data.views.length} 个视图，${catalog.axis_count} 个轴线或面名称`));
+    const scopeSummary=node('p');target.append(scopeSummary);
+    target.append(node('p',`纳入与待确认视图的规格目录：${data.profile_catalog.length} 种；${data.profile_catalog.join('、')||'暂无规格'}`));
+    const roleNames={MEMBERS:'构件识别',REFERENCE:'辅助参考',EXCLUDE:'排除',REVIEW:'待确认'};
+    function refreshScope(){const counts={MEMBERS:0,REFERENCE:0,EXCLUDE:0,REVIEW:0};for(const v of data.views)counts[LedgerTools.viewRole(v)]++;scopeSummary.textContent=Object.entries(counts).map(([k,n])=>`${roleNames[k]} ${n} 个`).join('；');}
+    refreshScope();
     function show(id) {
         const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren();
         const image=view.image_file||view.id+'.jpg';
@@ -221,6 +226,13 @@ function renderPreparedCatalog() {
                      node('a','打开300DPI原图',{href:`/api/jobs/${jobId}/views/${image}`,target:'_blank'}));
         if(view.detail_files?.length){const details=node('details');details.append(node('summary',`同视图局部放大图（${view.detail_files.length} 张，识别时与全图一起发送）`));for(const file of view.detail_files)details.append(node('img','',{src:`/api/jobs/${jobId}/views/${file}`,alt:'同一视图局部',style:'max-width:100%'}));panel.append(details);}
         panel.append(input('原始视图标题',view.title,value=>setField(view,'title',value)));
+        panel.append(select('视图用途',LedgerTools.viewRole(view),Object.entries(roleNames).filter(([k])=>view.kind!=='ISOMETRIC'||k==='REFERENCE'||k==='EXCLUDE'),value=>{
+            view.takeoff_role=value;view.filter_reviewed=true;view.filter_reason='';mark(view);refreshScope();show(id);
+        }));
+        panel.append(input('用途判断或人工修改理由',view.filter_reason||'',value=>{
+            view.filter_reason=value;view.filter_reviewed=true;mark(view);
+        }));
+        panel.append(node('small','辅助参考用于方向、标高和说明；底板、螺栓等详图不独立计数。BOB标高或缺少标签本身不能证明该视图无关。改为参考或排除时请填写理由。'));
         if(view.kind==='ELEVATION')panel.append(input('此立面的Alignment名称',view.fixed_label,value=>setField(view,'fixed_label',value)));
         panel.append(input('轴线或面名称',(view.axis_labels||[]).join(','),value=>{
             view.axis_labels=value.split(/[,，;；\n]+/).map(t=>t.trim()).filter(Boolean);view.axes_reviewed=true;mark(view);
@@ -230,7 +242,7 @@ function renderPreparedCatalog() {
             try{const box=JSON.parse(value);if(box.length!==4)throw Error('需要四个坐标');view.bbox=box;view.region_confirmed=false;mark(view);}catch{}
         }));
         const label=node('label'),check=node('input','',{type:'checkbox'});check.checked=view.region_confirmed;
-        check.onchange=()=>{view.region_confirmed=check.checked;mark(view);};label.append(check,document.createTextNode('裁切区域已核对，可用于第二阶段识别'));panel.append(label);
+        check.onchange=()=>{view.region_confirmed=check.checked;mark(view);};label.append(check,document.createTextNode('裁切区域已核对（是否进入识别由视图用途决定）'));panel.append(label);
         const diagnostic=node('details');diagnostic.append(node('summary','查看裁切检查依据'),node('pre',JSON.stringify(view.localization,null,2)));panel.append(diagnostic);
     }
     target.append(select('图纸视图',data.views[0]?.id,data.views.map(v=>[v.id,v.title]),show),panel);

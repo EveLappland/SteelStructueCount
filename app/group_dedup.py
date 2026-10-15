@@ -6,6 +6,7 @@ from itertools import combinations
 
 from .geometry import section
 from .member_recognition import RecognizedMember,normalize_view_tags,view_tag
+from .view_filter import role
 
 
 def _identity(key):
@@ -18,7 +19,7 @@ def build_group_review(data):
     'eligible' is only a mechanical trial: coverage and label agreement cannot
     prove that every drawing member was recognized or that lengths are correct.
     """
-    views={v['id']:v for v in data['views'] if v['kind']!='ISOMETRIC'}
+    views={v['id']:v for v in data['views'] if v['kind']!='ISOMETRIC' and role(v) in ('MEMBERS','REVIEW')}
     analysis={v['view_id']:v for v in data.get('view_analysis',[])}
     catalog=data.get('axis_catalog',{})
     known={view_tag(v) for v in views.values()}|set(normalize_view_tags(a['name'] for a in catalog.get('axes',[])))

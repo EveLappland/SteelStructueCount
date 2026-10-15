@@ -6,6 +6,7 @@
         return level?'EL.'+level[1]+(level[2]?'('+level[2].trim().toUpperCase()+')':''):name;
     }
     const tagOf=view=>normalizeTag(view.kind==='ELEVATION'&&view.fixed_label?view.fixed_label:view.title);
+    const viewRole=view=>view.kind==='ISOMETRIC'?(view.takeoff_role==='EXCLUDE'?'EXCLUDE':'REFERENCE'):(view.takeoff_role||'MEMBERS');
     function summarize(rows) {
         const groups=new Map();let quantity=0,unknownQuantity=0;
         for(const row of rows) {
@@ -45,6 +46,6 @@
         addButton.onclick=()=>{const tags=add.value.split(/[,，;；\n]+/).map(t=>t.trim()).filter(Boolean);if(tags.length){update([...row.view_tags,...tags]);add.value='';}};
         wrap.append(selected,details,add,addButton);render();return wrap;
     }
-    root.LedgerTools={summarize,tagEditor,tagOf,normalizeTag};
+    root.LedgerTools={summarize,tagEditor,tagOf,normalizeTag,viewRole};
     if(typeof module!=='undefined')module.exports=root.LedgerTools;
 })(globalThis);
