@@ -31,6 +31,7 @@ function table(headers,rows) { const table=node('table'),head=node('tr');headers
 function button(text,action,style='') { const b=node('button',text,{type:'button',class:style});b.onclick=action;return b; }
 function refreshJson() { $('#json-editor').value=JSON.stringify(draft.data,null,2); }
 function renderInventory() {
+    if(draft.data.catalog_mode==='ai_pages')return;
     const target=$('#discovery-inventory');target.replaceChildren();target.hidden=stageNumber!==1;
     if(stageNumber!==1)return;
     const inventory=draft.data.discovery_inventory;
@@ -211,6 +212,7 @@ function renderViewLedger() {
 
 function renderPreparedCatalog() {
     const data=draft.data,target=$('#stage-content'),panel=node('section');
+    if(data.catalog_mode==='ai_pages'){renderConstructionCatalog(data,target,panel);return;}
     target.append(node('p','第一阶段请核对高清裁切、标题、轴线或面名称及视图用途。只有“构件识别”进入第二阶段；参考和排除视图保留证据，待确认用途会明确列出，不能作为零根验收。过滤按每个视图进行，同一PDF可以包含不同用途。'));
     const catalog=data.axis_catalog||{axis_count:0,per_view:{}};
     target.append(node('p',`共 ${data.views.length} 个视图，${catalog.axis_count} 个轴线或面名称`));
@@ -247,4 +249,30 @@ function renderPreparedCatalog() {
     }
     target.append(select('图纸视图',data.views[0]?.id,data.views.map(v=>[v.id,v.title]),show),panel);
     if(data.views.length)show(data.views[0].id);
+}
+
+function renderConstructionCatalog(data,target,panel) {
+    const summary=data.catalog_summary||{},decisions={CONSTRUCTION:'采用',SKIP:'不采用',REVIEW:'待确认'};
+    target.append(node('p','第一阶段：AI判断页面用途，只有建造布置图进入定位与300DPI裁切。连接节点、概览等未采用页只保留说明，不生成高清截图。'));
+    target.append(node('h3',`${data.profile_catalog.length} 种钢材 · ${(summary.plan_names||[]).length} 个平面 · ${(summary.elevation_names||[]).length} 个立面`));
+    target.append(node('p',`钢材种类：${data.profile_catalog.join('、')||'暂无'}；图中出现的不同面名称：${summary.plane_name_count||0} 个。`));
+    target.append(table(['文件','PDF页','用途判断','说明','定位问题'],(data.page_decisions||[]).map(p=>[
+        p.file,p.page,decisions[p.decision]||p.decision,p.reason,p.issue||''])));
+    target.append(table(['平面/立面名称','类型','相关面名称','钢材种类'],data.views.map(v=>[
+        LedgerTools.tagOf(v),v.kind==='PLAN'?'平面':'立面',(v.axis_labels||[]).join('、'),(v.steel_types||[]).join('、')])));
+    function show(id){
+        const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren(node('h3',view.title));
+        if(view.image_file){const url=`/api/jobs/${jobId}/views/${view.image_file}`;panel.append(node('img','',{src:url,alt:view.title,style:'max-width:100%'}),node('a','打开300DPI高清图',{href:url,target:'_blank'}));}
+        panel.append(input('视图原始标题',view.title,v=>setField(view,'title',v)));
+        panel.append(input('平面/立面名称',view.plane_name,v=>setField(view,'plane_name',v)));
+        panel.append(select('类型',view.kind,[['PLAN','平面'],['ELEVATION','立面']],v=>setField(view,'kind',v)));
+        panel.append(input('此视图中的轴线或面名称（逗号分隔）',(view.axis_labels||[]).join(','),v=>{view.axis_labels=splitRefs(v);view.axes_reviewed=true;mark(view);}));
+        panel.append(input('钢材种类（逗号分隔）',(view.steel_types||[]).join(','),v=>{view.steel_types=splitRefs(v);mark(view);}));
+        panel.append(input('裁切区域 [左,上,右,下]',JSON.stringify(view.bbox),v=>{try{const box=JSON.parse(v);if(box.length!==4)throw Error('需四个坐标');view.bbox=box;view.region_confirmed=false;mark(view);}catch(e){showError(e);}}));
+        const label=node('label'),check=node('input','',{type:'checkbox'});check.checked=view.region_confirmed;
+        check.onchange=()=>{view.region_confirmed=check.checked;mark(view);};label.append(check,document.createTextNode('已核对完整标题、标尺、轴线与构件范围'));panel.append(label);
+        if(view.localization?.issues?.length)panel.append(node('p',view.localization.issues.join('；')));
+    }
+    if(data.views.length){target.append(select('有效建造视图',data.views[0].id,data.views.map(v=>[v.id,LedgerTools.tagOf(v)]),show),panel);show(data.views[0].id);}
+    else target.append(node('p','没有有效建造视图，不能进入第二阶段。请查看上方未采用或待确认原因；必要时重试第一阶段。'));
 }

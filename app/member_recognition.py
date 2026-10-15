@@ -42,6 +42,7 @@ class MemberResponse(Contract):
 
 def view_tag(view):
     """Drawing names are deduplication labels; application IDs remain provenance."""
+    if view.get('plane_name'):return normalize_view_tag(view['plane_name'])
     if view['kind']=='ELEVATION' and view.get('fixed_label'):
         return normalize_view_tag(view['fixed_label'])
     return normalize_view_tag(view['title'])

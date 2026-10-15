@@ -79,6 +79,8 @@ class View(Contract):
     detail_files: list[str] = Field(default_factory=list)
     axis_labels: list[str] = Field(default_factory=list,description='当前视图的轴线或面名称：Alignment立面与EL标高平面')
     axes_reviewed: bool = False
+    plane_name: str = ''
+    steel_types: list[str] = Field(default_factory=list)
     takeoff_role: Literal['MEMBERS','REFERENCE','EXCLUDE','REVIEW'] = 'MEMBERS'
     filter_reason: str = ''
     filter_reviewed: bool = False
@@ -179,6 +181,9 @@ class Member(Contract):
 
 class StageOne(Contract):
     workflow: Literal['legacy','image_first'] = 'legacy'
+    catalog_mode: Literal['legacy','ai_pages'] = 'legacy'
+    page_decisions: list[dict] = Field(default_factory=list)
+    catalog_summary: dict = Field(default_factory=dict)
     axis_catalog: dict = Field(default_factory=dict)
     views: list[View]
     frame: CoordinateFrame = Field(default_factory=CoordinateFrame)

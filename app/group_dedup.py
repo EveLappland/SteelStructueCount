@@ -130,6 +130,9 @@ def build_group_review(data):
     pending_sources=[{'view_id':identity,'title':view['title'],
         'status':analysis.get(identity,{}).get('status','missing')}
         for identity,view in views.items() if analysis.get(identity,{}).get('status')!='completed']
+    pending_sources.extend({'view_id':p['page_id'],'title':f"{p['file']} 第{p['page']}页",'status':'page_pending'}
+        for p in data.get('page_decisions',[]) if p['decision']=='REVIEW'
+        or p['decision']=='CONSTRUCTION' and not p.get('view_ids'))
     removed=sum(g['trial_removed_observations'] for g in groups)
     return {'mode':'offline_group_review','engineering_verified':False,'mutates_source':False,
         'summary':{'input_rows':len(seen),'valid_observation_units':input_count,'invalid_rows':len(invalid),
