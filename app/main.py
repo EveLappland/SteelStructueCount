@@ -88,7 +88,7 @@ def create_app(root=ROOT, start_workers=True):
     @application.post('/api/jobs')
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
                    api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True),
-                   max_concurrency:int|None=Form(None,ge=1,le=8)):
+                   max_concurrency:int|None=Form(None,ge=1)):
         pdfs=[file for file in files if file.filename and file.filename.lower().endswith('.pdf')]
         if not pdfs:
             raise HTTPException(400,'请至少上传一个 PDF。')

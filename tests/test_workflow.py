@@ -184,7 +184,7 @@ class ApiWorkflowTest(unittest.TestCase):
         self.assertTrue(any(a.get('coverage_differences') for a in stage_two['data']['view_analysis']))
         self.assertEqual(self.client.get(base+'/views/'+image).content,original)
         invalid=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision'],
-            'settings':{'max_concurrency':'9'}})
+            'settings':{'max_concurrency':'-1'}})
         self.assertEqual(invalid.status_code,422)
         self.assertEqual(self.client.get(base+'/stages/2').json()['revision'],stage_two['revision'])
         retry=self.client.post(base+'/stages/2/retry',json={'revision':stage_two['revision']})

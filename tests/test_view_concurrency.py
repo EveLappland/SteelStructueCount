@@ -106,6 +106,13 @@ class ViewConcurrencyTests(unittest.TestCase):
         batches=[e for e in self.audit.read(limit=1000)['items'] if e['event']=='VIEW_BATCH_STARTED']
         self.assertEqual([e['worker_count'] for e in batches],[1,3])
 
+    def test_large_config_is_limited_by_available_views(self):
+        result=self.run_views(lambda client,model,prompt,entry,*a,**kw:self.payload(entry),'300')
+        batches=[e for e in self.audit.read(limit=1000)['items'] if e['event']=='VIEW_BATCH_STARTED']
+        self.assertEqual(batches[-1]['configured_concurrency'],300)
+        self.assertEqual(batches[-1]['worker_count'],3)
+        self.assertEqual(len(result['view_members']),3)
+
     def test_duplicate_view_ids_fail_before_any_api_call(self):
         self.one['views'][1]['id']=self.one['views'][0]['id']
         with patch('app.image_workflow._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call') as model:
@@ -119,19 +126,19 @@ class ViewConcurrencyTests(unittest.TestCase):
             self.assertEqual(view_concurrency({'max_concurrency':'3'}),3)
             self.assertEqual(view_concurrency({'max_concurrency':''}),2)
         with patch.dict('os.environ',{},clear=True):self.assertEqual(view_concurrency(),3)
-        for value in ['0','9','3.0','invalid',True,-1]:
+        for value in ['0','3.0','invalid',True,-1]:
             with self.assertRaises(ValueError):view_concurrency({'max_concurrency':value})
 
 
 class ConcurrencyFormTests(unittest.TestCase):
     def test_blank_upload_setting_uses_default_and_invalid_limits_create_no_job(self):
         with tempfile.TemporaryDirectory() as temp,TestClient(create_app(Path(temp),start_workers=False)) as client:
-            for value in ('','1','8'):
+            for value in ('','1','8','20','300'):
                 response=client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
                                      data={'max_concurrency':value})
                 self.assertEqual(response.status_code,200,response.text)
             before=len(client.get('/api/jobs').json())
-            for value in ('0','9','3.5'):
+            for value in ('0','-1','3.5'):
                 response=client.post('/api/jobs',files=[('files',('drawing.pdf',pdf_bytes(),'application/pdf'))],
                                      data={'max_concurrency':value})
                 self.assertEqual(response.status_code,422,response.text)
