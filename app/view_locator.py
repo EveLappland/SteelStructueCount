@@ -120,6 +120,13 @@ def refine_view_regions(page,views,audit=None):
         for evidence_id in claimed:
             if evidence_id in native and not contains(box,native[evidence_id]['bbox']):
                 item=native[evidence_id];p=center(item['bbox'])
+                foreign_title=next((t for t in page['titles'] if t['evidence_id']==evidence_id
+                                    and (not title or t['evidence_id']!=title['evidence_id'])),None)
+                if foreign_title:
+                    rejected.append({'id':evidence_id,'text':item['text'],
+                        'owner_view':next((key for key,anchor in anchors.items() if anchor['evidence_id']==evidence_id),None),
+                        'reason':'该证据是另一独立视图的原生标题，拒绝跨视图边界错引，不扩大裁切。'})
+                    continue
                 ownership=sorted((distance(p,c,page),key) for key,c in cores.items())
                 owner=ownership[0][1]
                 # A repeated axis name on the neighbouring view is a bad model
