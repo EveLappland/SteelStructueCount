@@ -155,7 +155,7 @@ $('#apply-json').onclick=()=>{try{draft.data=JSON.parse($('#json-editor').value)
 $('#save').onclick=async()=>{try{const reason=$('#edit-reason').value.trim();if(!reason)throw Error('请填写修改依据。');if(stageNumber<=2){const seen=new Set();for(const entry of manualTargets){if(!entry.page_id||seen.has(entry.target))continue;seen.add(entry.target);const id=`manual:${crypto.randomUUID()}`;draft.data.manual_evidence.push({id,page_id:entry.page_id,kind:'MANUAL',bbox:entry.bbox,text:reason,points:[],style:{}});if(entry.target===draft.data.frame)entry.target.origin_evidence_ids.push(id);else if(Array.isArray(entry.target.evidence_ids))entry.target.evidence_ids.push(id);}}
 draft=await api(`/api/jobs/${jobId}/stages/${stageNumber}`,'PATCH',{revision:draft.revision,data:draft.data,reason});dirty=false;manualTargets=[];stageKey='';$('#edit-reason').value='';renderStage();await poll();}catch(e){showError(e);}};
 $('#approve').onclick=async()=>{try{if(dirty)throw Error('请先保存修改，再确认阶段。');$('#approve').disabled=true;await api(`/api/jobs/${jobId}/stages/${stageNumber}/approve`,'POST',{revision:draft.revision,acknowledge_pending:$('#pending').checked,settings:stageNumber===1?settings():{}});$('#pending').checked=false;stageKey='';await poll();}catch(e){showError(e);$('#approve').disabled=false;}};
-$('#retry').onclick=async()=>{try{if(dirty)throw Error('请先保存当前修改。');await api(`/api/jobs/${jobId}/stages/${stageNumber}/retry`,'POST',{revision:draft.revision,settings:settings()});stageKey='';await poll();}catch(e){showError(e);}};
+$('#retry').onclick=async()=>{try{if(dirty)throw Error('请先保存当前修改。');await api(`/api/jobs/${jobId}/stages/${stageNumber}/retry`,'POST',{revision:draft.revision,settings:{...settings(),reasoning_effort:$('#retry-effort').value}});stageKey='';await poll();}catch(e){showError(e);}};
 window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
 $('#refresh-trace').onclick=refreshTrace;
 $('#task-trace').addEventListener('toggle',()=>{if($('#task-trace').open)refreshTrace();});
@@ -172,16 +172,18 @@ function renderViewLedger() {
     function summarySection(container,rows,label) {
         const stats=LedgerTools.summarize(rows);container.replaceChildren(node('h3',label),
             node('p',`钢材种类：${stats.profileCount} 种 · ${stats.quantity} 个构件段 · ${stats.unknownQuantity} 个缺少长度（未去重，待核对）`),
-            table(['钢材类型','单根长度 mm','数量'],stats.groups.map(g=>[g.spec,g.length_mm,g.member_cnt])));
+            table(['钢材类型','单根长度 mm','数量'],stats.groups.map(g=>[g.spec,g.length_mm==null?'待确认':Number(g.length_mm).toFixed(2),g.member_cnt])));
     }
     function updateSummaries() {
         summarySection(overview,data.view_members,'全部视图台账汇总（包含跨视图重复）');
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    target.append(table(['视图','识别状态','标签数','构件段数（未去重）','规格覆盖差异'],data.view_analysis.map(a=>[
-        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,a.label_count,a.member_cnt,
-        (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}个候选段`).join('；')])));
+    target.append(table(['视图','识别状态','轮次（采用/尝试）','标签数','构件段数（未去重）','规格覆盖差异','尚存校验问题'],data.view_analysis.map(a=>[
+        data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,
+        a.rounds_attempted?`${a.selected_round}/${a.rounds_attempted}`:'—',a.label_count,a.member_cnt,
+        (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}个候选段`).join('；'),
+        (a.remaining_checks||[]).map(c=>c.message).join('；')])));
     const choices=data.views.filter(v=>LedgerTools.viewRole(v)==='MEMBERS');
     const panel=node('section');
     panel.addEventListener('input',updateSummaries);
@@ -194,11 +196,16 @@ function renderViewLedger() {
         panel.append(node('p',`当前视图轴线或面名称数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
-        panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','构件位置','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
+        panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','长度依据 / 斜撑直角边 mm','构件位置','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
             LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:a.kind||'ELEVATION',title:a.name,fixed_label:a.kind==='PLAN'?null:a.name}))],()=>{mark(r);refreshJson();}),
             input('数量',r.member_cnt,v=>setField(r,'member_cnt',v,'number'),'number'),
-            input('单段长度',r.length_mm,v=>setField(r,'length_mm',v,'number'),'number'),
+            r.length_input?.method==='DIAGONAL' ? node('span',r.length_mm==null?'待确认':`${Number(r.length_mm).toFixed(2)} mm`) :
+                input('单段长度',r.length_mm,v=>{setField(r,'length_mm',v,'number');if(r.length_input?.method==='DIRECT')r.length_input.direct_mm=r.length_mm;},'number'),
+            r.length_input?.method==='DIAGONAL' ? (()=>{const wrap=node('div');wrap.append(
+                input('水平边',r.length_input.horizontal_mm,v=>{r.length_input.horizontal_mm=v===''?null:Number(v);mark(r);},'number'),
+                input('竖直边',r.length_input.vertical_mm,v=>{r.length_input.vertical_mm=v===''?null:Number(v);mark(r);},'number'),
+                node('small',r.length_input.evidence||r.length_formula||''));return wrap;})() : (r.length_input?.evidence||r.length_formula||''),
             input('用平面或立面轴线说明位置',r.location||'',v=>setField(r,'location',v)),
             input('可留空',r.issue,v=>setField(r,'issue',v||null)),r.checks.join('；'),
             button('删除',()=>{data.view_members=data.view_members.filter(x=>x!==r);mark();show(id);},'secondary')

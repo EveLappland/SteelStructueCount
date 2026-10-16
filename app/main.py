@@ -76,6 +76,7 @@ def create_app(root=ROOT, start_workers=True):
                         audit.event('STAGE_AUTO_ADVANCED',pending=pending_reasons(stage,draft['data']),
                             reason='自动模式继续处理；问题保留审计，不代表人工确认。')
                         stage=store.approve(job_id,stage,draft['revision'],True,reason='自动模式继续，非人工工程确认。')
+                        credentials.setdefault(job_id,{})['reasoning_effort']='high'
                         reuse_saved=False
                         if stage is None:break
                     except Exception as exc:
@@ -89,7 +90,7 @@ def create_app(root=ROOT, start_workers=True):
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
         if settings and stage in (1,2,3):
             existing=credentials.get(job_id,{})
-            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode','max_concurrency') and v}}
+            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode','max_concurrency','reasoning_effort') and v}}
         if start_workers:
             threading.Thread(target=worker,args=(job_id,stage,reuse_saved),daemon=True).start()
 
@@ -206,12 +207,14 @@ def create_app(root=ROOT, start_workers=True):
                 (directory(job_id)/'workflow.json').write_text(json.dumps({'auto_run':body.auto_run}),encoding='utf-8')
             AuditLog(directory(job_id),stage).event('STAGE_APPROVED',revision=body.revision,
                 acknowledge_pending=body.acknowledge_pending,reason=body.reason or '用户确认。')
-            launch(job_id,next_stage,body.settings)
+            launch(job_id,next_stage,{**body.settings,'reasoning_effort':'high'})
         return status(job_id)
 
     @application.post('/api/jobs/{job_id}/stages/{stage}/retry')
     def retry_stage(job_id:str,stage:int,body:StageAction):
         previous=store.stage(job_id,stage)
+        if body.settings.get('reasoning_effort','high') not in ('low','high','max'):
+            raise HTTPException(422,'思考强度只能是 low、high 或 max。')
         if stage==2 and store.stage(job_id,1)['data'].get('workflow')=='image_first':
             try:view_concurrency({**credentials.get(job_id,{}),**{k:v for k,v in body.settings.items() if v}})
             except ValueError as error:raise HTTPException(422,str(error)) from error

@@ -26,7 +26,7 @@ from .audit import AuditLog
 from .discovery_inventory import build_inventory
 from .view_locator import localization_prompt, refine_view_regions
 from .axis_catalog import build_axis_catalog
-from .member_recognition import MemberResponse, validate_ledger
+from .member_recognition import MemberResponse, ImageMemberResponse, validate_ledger
 from .group_reconciliation import reconcile, export_sheets
 from .ledger_coverage import refresh_coverage
 from .view_filter import apply_filter,role
@@ -74,9 +74,9 @@ DEEPSEEK_VISION_MODELS = ('deepseek-flash','deepseek-v4-flash','deepseek-v4-flas
 
 def request_options(model, effort='high'):
     if model in DEEPSEEK_VISION_MODELS:
-        if effort not in ('high','max'):
-            raise ValueError('图纸识别仅使用 high 或 max 思考强度。')
-        return {'reasoning_effort':effort,'max_tokens':131072 if effort=='max' else 65536,
+        if effort not in ('low','high','max'):
+            raise ValueError('思考强度只能是 low、high 或 max。')
+        return {'reasoning_effort':effort,'max_tokens':131072 if effort=='max' else (32768 if effort=='low' else 65536),
                 'extra_body':{'thinking':{'type':'enabled'}}}
     return {}
 
@@ -142,7 +142,7 @@ def parse_model_content(content, contract, entry, audit=None):
                 observation['id']=f"{entry['id']}-o{index:03d}"
                 observation['view_id']=entry['id']
     result=contract.model_validate(payload).model_dump()
-    if contract is MemberResponse and audit:
+    if contract in (MemberResponse, ImageMemberResponse) and audit:
         for index,(raw,row) in enumerate(zip(payload['members'],result['members']),1):
             if raw['view_tags']!=row['view_tags']:
                 audit.event('MODEL_VIEW_TAGS_NORMALIZED',row_index=index,
@@ -222,20 +222,21 @@ def apply_boundary_reviews(observations,payload,evidence,aliases,audit=None):
     return sorted(set(by_id)-seen)
 
 
-def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None,validation_retry=False,reasoning_effort='high'):
+def model_call(client, model, prompt, entry, response_path, contract, *, reuse_saved=False, emit=None,audit=None,options_override=None,validation_retry=False,reasoning_effort='high',auto_retry=False):
     if contract in (ViewResponse,AnalysisResponse):
         guidance=(Path(__file__).parent/'prompts'/'stage_one.md').read_text(encoding='utf-8')
         if not prompt.startswith(guidance+'\n\n'):
             prompt=guidance+'\n\n'+prompt
     schema_data=model_schema(contract)
-    if contract is MemberResponse and entry.get('allowed_view_tags'):
-        schema_data['$defs']['RecognizedMember']['properties']['view_tags']['items']={
+    if contract in (MemberResponse, ImageMemberResponse) and entry.get('allowed_view_tags'):
+        name='ImageMember' if contract is ImageMemberResponse else 'RecognizedMember'
+        schema_data['$defs'][name]['properties']['view_tags']['items']={
             'type':'string','enum':list(dict.fromkeys(entry['allowed_view_tags']))}
     schema = json.dumps(schema_data, ensure_ascii=False)
     options={**request_options(model, reasoning_effort),**(options_override or {})}
-    if model in DEEPSEEK_VISION_MODELS and (options.get('reasoning_effort') not in ('high','max') or
+    if model in DEEPSEEK_VISION_MODELS and (options.get('reasoning_effort') not in ('low','high','max') or
             options.get('extra_body',{}).get('thinking',{}).get('type')!='enabled'):
-        raise ValueError('图纸识别不能降级为 low 或关闭思考。')
+        raise ValueError('图纸识别必须开启思考，并使用 low、high 或 max。')
     request_material=json.dumps({'model':model,'endpoint':str(client.base_url),'prompt':prompt,'schema':schema,
                                  'page':entry['page'],'crop':entry.get('crop'),'options':options,
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
@@ -298,8 +299,8 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
         content=[{'type':'text','text':prompt+'\nJSON schema:\n'+schema}]
         if not entry.get('text_only'):
             content.append({'type':'image_url','image_url':{'url':render_data_uri(entry, max_dimension=entry.get('image_max_dimension',2600))}})
-        if contract is MemberResponse:content.reverse()
-        if contract is MemberResponse and entry.get('detail_paths'):
+        if contract in (MemberResponse, ImageMemberResponse):content.reverse()
+        if contract in (MemberResponse, ImageMemberResponse) and entry.get('detail_paths'):
             content=[content[0],{'type':'text','text':'第一张为完整视图，后续为同一视图依次排列、相互重叠的局部放大图。它们是同一批构件，只统计一次；用全图确定关系，用局部读清标签和端部。'}]+[
                 {'type':'image_url','image_url':{'url':render_data_uri({'image_path':path})}}
                 for path in entry['detail_paths']]+[content[1]]
@@ -325,7 +326,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
         truncated=response_path.with_suffix('.truncated.json')
         if truncated.exists():truncated=response_path.with_suffix('.max.truncated.json')
         shutil.copyfile(response_path,truncated)
-        if model in DEEPSEEK_VISION_MODELS and options.get('reasoning_effort')!='max':
+        if auto_retry and model in DEEPSEEK_VISION_MODELS and options.get('reasoning_effort')!='max':
             if audit:audit.event('MODEL_TRUNCATION_RETRY',response_file=relative,
                 preserved_file=str(truncated.relative_to(audit.directory)),
                 reason='保留截断响应；升至 max 并增加输出额度后仅重试一次，保持思考开启。')
@@ -336,7 +337,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
         result=parse_model_content(response_content(raw),contract,entry,audit)
     except Exception as exc:
         if audit:audit.event('MODEL_VALIDATION_FAILED',response_file=relative,error_type=type(exc).__name__,error=str(exc))
-        if contract is MemberResponse and not validation_retry:
+        if auto_retry and contract in (MemberResponse, ImageMemberResponse) and not validation_retry:
             invalid=response_path.with_suffix('.invalid.json')
             shutil.copyfile(response_path,invalid)
             if emit:emit('构件响应格式无效，保留原响应并重试一次。')
@@ -769,6 +770,8 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
         for row in sheet:
             for cell in row:
                 cell.alignment=Alignment(vertical='top',wrap_text=True)
+                if cell.row>1 and isinstance(cell.value,(int,float)) and '长度' in str(sheet.cell(1,cell.column).value):
+                    cell.number_format='0.00'
     workbook.save(output/'steel_takeoff.xlsx')
     for number,data in enumerate((stage_one,stage_two,stage_three),1):
         write_json(output/f'stage_{number}.json',data)
@@ -791,12 +794,12 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
     audit=audit or AuditLog(directory,stage=stage,secrets=(settings.get('api_key'),os.getenv('LLM_API_KEY')))
     state=store.stage(job_id,min(stage,3))
     recalculation=any(h['action'] in ('retry','generated','retry_proposal') for h in state.get('history',[]))
-    effort='max' if recalculation else settings.get('reasoning_effort','high')
+    effort=settings.get('reasoning_effort','high')
     settings={**settings,'reasoning_effort':effort}
     audit.event('STAGE_STARTED',revision=state['revision'],reuse_saved=reuse_saved,
                 recalculation=recalculation,reasoning_effort=effort)
     emit=lambda message:store.progress(job_id,message)
-    if stage in (1,2):emit(f'AI 思考强度：{effort}。'+('重新计算，使用更高档位。' if recalculation else ''))
+    if stage in (1,2):emit(f'AI 思考强度：{effort}。')
     if stage==1:
         from .image_workflow import prepare_catalog
         result=prepare_catalog(directory,settings,emit,audit,reuse_saved=reuse_saved)

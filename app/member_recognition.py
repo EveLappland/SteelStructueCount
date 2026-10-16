@@ -1,8 +1,10 @@
 """Compact per-view ledger. PDF positions only bind the image to native evidence."""
 import json
 import re
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
+from typing import Literal
 from pydantic import Field, StrictInt, field_validator
 from .domain import Contract
 from .geometry import section
@@ -38,6 +40,46 @@ class RecognizedMember(Contract):
 
 class MemberResponse(Contract):
     members: list[RecognizedMember]
+
+
+class LengthInput(Contract):
+    method: Literal['DIRECT', 'DIAGONAL', 'UNKNOWN']
+    direct_mm: float | None = Field(default=None, gt=0)
+    horizontal_mm: float | None = Field(default=None, gt=0)
+    vertical_mm: float | None = Field(default=None, gt=0)
+    evidence: str = Field(max_length=1000)
+
+
+class ImageMember(Contract):
+    spec: str = Field(min_length=1, max_length=120)
+    view_tags: list[str] = Field(min_length=1)
+    member_cnt: StrictInt = Field(ge=1, le=10000)
+    length: LengthInput
+    location: str = Field(max_length=4000)
+    issue: str | None = Field(max_length=4000)
+
+    @field_validator('view_tags')
+    @classmethod
+    def plane_names_only(cls, values):
+        return RecognizedMember.plane_names_only(values)
+
+
+class ImageMemberResponse(Contract):
+    members: list[ImageMember]
+
+
+def calculate_length(length):
+    """Use drawing dimensions only; never infer real length from image pixels."""
+    if length.method == 'DIRECT':
+        return length.direct_mm, 'direct_mm', [] if length.direct_mm else ['缺少直构件名义长度']
+    if length.method == 'DIAGONAL':
+        if length.horizontal_mm is None or length.vertical_mm is None:
+            return None, 'sqrt(horizontal_mm² + vertical_mm²)', ['斜撑缺少水平或竖直直角边尺寸']
+        horizontal = Decimal(str(length.horizontal_mm))
+        vertical = Decimal(str(length.vertical_mm))
+        value = (horizontal * horizontal + vertical * vertical).sqrt().quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        return float(value), f'sqrt({horizontal}² + {vertical}²)', []
+    return None, 'unknown', ['缺少可确认的长度依据']
 
 
 def view_tag(view):
@@ -98,8 +140,9 @@ def make_input(page, view, stage_one):
 
 def recognition_prompt(bundle):
     guidance = (Path(__file__).parent/'prompts'/'stage_two_members.md').read_text(encoding='utf-8')
-    # Only the view-scoped package built above is sent, not arbitrary caller fields.
-    compact={key:bundle[key] for key in ('current_view_tag','profile_catalog','view_catalog','axis_catalog','image','native_evidence') if key in bundle}
+    # The model sees image plus stage-one catalogs. Native PDF data stays local
+    # for validation and audit, as requested for the image-first workflow.
+    compact={key:bundle[key] for key in ('current_view_tag','profile_catalog','view_catalog','axis_catalog','image') if key in bundle}
     return guidance + '\n输入包：\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
 
 
@@ -114,11 +157,20 @@ def validate_rows(rows, view, stage_one):
     profiles = {section(p)[0] for p in stage_one.get('profile_catalog', [])}
     result = []
     for index, raw in enumerate(rows, 1):
+        length_input = raw.get('length') or raw.get('length_input')
+        calculated_issues = []
+        formula = raw.get('length_formula', '')
+        if length_input:
+            length_input = LengthInput.model_validate(length_input)
+            computed, formula, calculated_issues = calculate_length(length_input)
+            if 'length' in raw or length_input.method == 'DIAGONAL':
+                raw = {**raw, 'length_mm': computed}
+            length_input = length_input.model_dump()
         # Saved ledgers may predate location. Do not pretend their old basis is
         # an axis location; retain it separately and ask for a position on edit.
         row = RecognizedMember.model_validate({k: raw.get(k,'') if k=='location' else raw[k]
                                               for k in RecognizedMember.model_fields}).model_dump()
-        issues = []
+        issues = list(calculated_issues)
         tags=[]
         for tag in row['view_tags']:
             matches=aliases.get(tag,set())
@@ -141,6 +193,7 @@ def validate_rows(rows, view, stage_one):
         result.append({**row, 'id': raw.get('id', f"{view['id']}-m{index:03d}"),
                        'source_view': view['id'], 'page_id': view['page_id'],
                        'evidence_ids':raw.get('evidence_ids',[]),
+                       **({'length_input': length_input, 'length_formula': formula} if length_input else {}),
                        **({'legacy_basis':raw.get('legacy_basis',raw.get('basis'))}
                           if raw.get('legacy_basis') or raw.get('basis') else {}),
                        'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review'})

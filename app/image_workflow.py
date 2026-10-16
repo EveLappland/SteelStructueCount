@@ -8,16 +8,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor,as_completed
 import pymupdf as fitz
 from pathlib import Path
-from collections import Counter
 
 from .axis_catalog import build_axis_catalog
 from .domain import StageTwo
 from .drawing_input import render_png,write_view_image
 from .llm_runner import _api_settings
-from .member_recognition import make_input,recognition_prompt,MemberResponse,validate_rows,validate_ledger,allowed_model_tags
-from .native_pdf import write_json,inside
-from .discovery_inventory import labels
-from .geometry import section
+from .member_recognition import make_input,recognition_prompt,ImageMemberResponse,validate_rows,validate_ledger,allowed_model_tags
+from .native_pdf import write_json
+from .stage_two_iteration import assess_rows,revision_prompt
 from .ai_concurrency import view_concurrency
 from .view_filter import role
 
@@ -111,11 +109,9 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                     dispatch_state='prepared',
                     image_sha256=hashlib.sha256(image).hexdigest(),width_px=width,height_px=height,dpi=300,
                     detail_files=view.get('detail_files',[]),
-                    input_file=str(input_path.relative_to(directory)),native_text_sent=bool(context['texts']),vectors_sent=bool(context['vectors']),
+                    input_file=str(input_path.relative_to(directory)),native_text_sent=False,vectors_sent=False,
                     text_count=len(context['texts']),vector_count=len(context['vectors']),vector_total=context['vector_total'],
                     vector_context_truncated=context['vector_context_truncated'])
-        if context['vector_context_truncated']:
-            item['warnings'].append(f"{view['title']} 矢量辅助证据只发送了 {len(context['vectors'])}/{context['vector_total']} 条；完整证据保存在 native 目录，不能据此判断构件缺失。")
         item.update(bundle=bundle,image_path=image_path)
 
     def checkpoint():
@@ -148,28 +144,55 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             audit.event('VIEW_RECOGNITION_STARTED',view_id=view['id'],title=view['title'],
                         active_views=running,concurrency_limit=limit)
             emit(f"开始识图：{view['title']}；当前同时处理 {running}/{workers} 个视图。")
-            # Each worker owns its HTTP client; SDK retries remain inside the
-            # same slot and retain the existing high/max reasoning settings.
+            # Each worker owns its HTTP client. Its rounds are sequential while
+            # distinct views retain the configured concurrency.
             client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
-            payload=model_call(client,model,recognition_prompt(bundle),
-                {**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
-                 'detail_paths':[str(directory/'views'/Path(name).name) for name in view.get('detail_files',[])],
-                 'allowed_view_tags':allowed_model_tags(bundle)},
-                folder/f"{view['id']}_members.json",MemberResponse,reuse_saved=reuse_saved,emit=emit,audit=audit,
-                reasoning_effort=settings.get('reasoning_effort','high'))
-            rows=validate_rows(payload['members'],view,one)
-            count=sum(r['member_cnt'] for r in rows)
-            # Native labels are only a local check; never part of the AI request.
-            native_profiles=Counter(profile for t in pages[view['page_id']]['texts'] if inside(t,view['bbox']) for profile,_ in labels(t['text']))
-            recognized_profiles=Counter()
-            for row in rows:recognized_profiles[section(row['spec'])[0]]+=row['member_cnt']
-            native_count=sum(native_profiles.values())
-            coverage=[{'spec':spec,'label_count':native_profiles[spec],'member_cnt':recognized_profiles[spec]}
-                      for spec in sorted(native_profiles.keys()|recognized_profiles.keys())
-                      if native_profiles[spec]!=recognized_profiles[spec]]
+            entry={**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
+                   'detail_paths':[str(directory/'views'/Path(name).name) for name in view.get('detail_files',[])],
+                   'allowed_view_tags':allowed_model_tags(bundle)}
+            prompt=recognition_prompt(bundle)
+            previous=None;feedback=[];rounds=[];best=None
+            for round_number in range(1,4):
+                round_prompt=prompt if round_number==1 else revision_prompt(prompt,previous,feedback,round_number)
+                try:
+                    payload=model_call(client,model,round_prompt,entry,
+                        folder/f"{view['id']}_members_round{round_number}.json",ImageMemberResponse,
+                        reuse_saved=reuse_saved,emit=emit,audit=audit,
+                        reasoning_effort=settings.get('reasoning_effort','high'),auto_retry=False)
+                    rows=validate_rows(payload['members'],view,one)
+                    assessment=assess_rows(rows,pages[view['page_id']],view)
+                    score=len(assessment['feedback'])
+                    rounds.append({'round':round_number,'status':'valid','score':score,'assessment':assessment,
+                                   'response_file':f"{view['id']}_members_round{round_number}.json"})
+                    audit.event('VIEW_RECOGNITION_ROUND',view_id=view['id'],round=round_number,
+                                score=score,feedback=assessment['feedback'])
+                    if best is None or score<=best['score']:
+                        best={'round':round_number,'score':score,'rows':rows,'assessment':assessment}
+                    previous=payload
+                    feedback=assessment['feedback']
+                    if not feedback:break
+                except Exception as exc:
+                    reason=audit.scrub(str(exc))
+                    feedback=[{'check':'response_error','message':reason}]
+                    rounds.append({'round':round_number,'status':'failed','error':reason})
+                    audit.event('VIEW_RECOGNITION_ROUND_FAILED',view_id=view['id'],round=round_number,error=reason)
+                    if round_number==3 and best is None:
+                        write_json(folder/f"{view['id']}_rounds.json",
+                                   {'view_id':view['id'],'rounds':rounds,'selected_round':None})
+                        raise
+                if round_number<3:emit(f"{view['title']} 本地校验需复查，进入第 {round_number+1}/3 轮。")
+            write_json(folder/f"{view['id']}_rounds.json",{'view_id':view['id'],'rounds':rounds,
+                      'selected_round':best['round'] if best else None,
+                      'selection_reason':'选择本地校验问题最少的有效轮次，同分取较新轮次。'})
+            if best is None:raise ValueError('三轮识图均未产生有效台账。')
+            rows=best['rows'];assessment=best['assessment']
+            count=assessment['member_cnt'];native_count=assessment['label_count']
+            coverage=assessment['coverage_differences']
             outcome={'rows':rows,'warnings':[], 'status':{'view_id':view['id'],
                 'status':'completed' if rows else 'empty','member_cnt':count,
-                'label_count':native_count,'coverage_differences':coverage}}
+                'label_count':native_count,'coverage_differences':coverage,
+                'rounds_attempted':len(rounds),'selected_round':best['round'],
+                'remaining_checks':assessment['feedback']}}
             audit.event('LOCAL_PROFILE_COVERAGE_CHECK',view_id=view['id'],differences=coverage,
                         reason='只在本地比较各规格标签与候选段数量；拼接可能造成差异，不强制补齐或删除。')
             if count!=native_count:outcome['warnings'].append(f"{view['title']}：{native_count}处规格标签与{count}个候选段不一致，需核对。")

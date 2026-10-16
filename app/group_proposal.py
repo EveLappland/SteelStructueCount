@@ -41,7 +41,7 @@ def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
             path=folder/('proposal.json' if attempt==0 else f'proposal_repair{attempt}.json')
             proposal=model_call(client,model,prompt,
                 {'id':'group-review','page':1,'source_path':str(snapshot),'text_only':True},
-                path,GroupProposal,emit=emit,audit=audit,reasoning_effort='max',reuse_saved=reuse_saved)
+                path,GroupProposal,emit=emit,audit=audit,reasoning_effort=settings.get('reasoning_effort','high'),reuse_saved=reuse_saved)
             draft=reconcile(two);draft.update(resolutions=proposal['resolutions'],exclusions=proposal['exclusions'])
             try:
                 result=reconcile(two,draft)

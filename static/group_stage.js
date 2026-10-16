@@ -5,10 +5,10 @@ function renderGroupReconciliation() {
     target.append(node('p',`已确认 ${totals.confirmed_groups} 组 / ${totals.confirmed_assemblies} 个组合实体 / ${totals.confirmed_single_members} 根单件；待核验观察 ${totals.pending_observation_units} 个，未完成来源视图 ${totals.pending_source_views} 个。`),
         node('p','修改后请保存，服务器会重新核算数量。每个结果组从各来源分配同等数量；部分重叠须拆成多个结果组。组合角钢在最终统计时展开一次。'),
         table(['钢材类型','名义长度 mm','已确认单根数量','总长度 mm'],data.summary.map(s=>[s.profile,s.length_mm,s.quantity,s.total_length_mm])));
-    const proposeButton=button('AI重新核验并自动导出（max）',async()=>{
+    const proposeButton=button('AI重新核验并自动导出',async()=>{
         try{
             if(dirty)throw Error('请先保存当前修改，再生成AI提案。');
-            await api(`/api/jobs/${jobId}/stages/3/retry`,'POST',{revision:draft.revision,reuse_saved:false,auto_run:true,settings:{...settings(),review_mode:'ai'}});
+            await api(`/api/jobs/${jobId}/stages/3/retry`,'POST',{revision:draft.revision,reuse_saved:false,auto_run:true,settings:{...settings(),review_mode:'ai',reasoning_effort:$('#retry-effort').value}});
             stageKey='';await poll();
         }catch(error){showError(error);}
     });
