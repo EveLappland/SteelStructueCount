@@ -194,8 +194,8 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                 'rounds_attempted':len(rounds),'selected_round':best['round'],
                 'remaining_checks':assessment['feedback']}}
             audit.event('LOCAL_PROFILE_COVERAGE_CHECK',view_id=view['id'],differences=coverage,
-                        reason='只在本地比较各规格标签与候选段数量；拼接可能造成差异，不强制补齐或删除。')
-            if count!=native_count:outcome['warnings'].append(f"{view['title']}：{native_count}处规格标签与{count}个候选段不一致，需核对。")
+                        reason='只在本地比较各规格标签数与member_cnt合计；不强制补齐或删除。')
+            if count!=native_count:outcome['warnings'].append(f"{view['title']}：{native_count}处钢材标签与{count}根钢材不一致，需核对。")
             elif coverage:outcome['warnings'].append(f"{view['title']} 总数虽相同，但各规格数量覆盖不一致，请核对。")
             if not rows:outcome['warnings'].append(f"{view['title']} 未识别到构件，不能作为零根验收。")
             for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row)
@@ -223,7 +223,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                     outcome=future.result()
                     item['rows']=outcome['rows'];item['status']=outcome['status']
                     item['warnings'].extend(outcome['warnings'])
-                    emit(f"识图完成 {finished}/{len(eligible)}：{view['title']}，{len(item['rows'])} 行、{item['status']['member_cnt']} 个候选段。")
+                    emit(f"识图完成 {finished}/{len(eligible)}：{view['title']}，{len(item['rows'])} 行、{item['status']['member_cnt']} 根钢材。")
                 except Exception as exc:
                     error=audit.scrub(str(exc))
                     item['status']={'view_id':view['id'],'status':'failed','member_cnt':0,'error':error}

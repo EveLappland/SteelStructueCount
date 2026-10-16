@@ -24,10 +24,10 @@ def refresh_coverage(data,pages):
                         status='completed' if count else 'empty')
         prefix=view['title']
         data['warnings']=[w for w in data.get('warnings',[]) if not (
-            w.startswith(prefix+'：') and '处规格标签与' in w or
+            w.startswith(prefix+'：') and ('处规格标签与' in w or '处钢材标签与' in w) or
             w.startswith(prefix+' 总数虽相同，但各规格数量覆盖不一致') or
             w.startswith(prefix+' 未识别到构件，不能作为零根验收'))]
-        if count!=native_count:data['warnings'].append(f'{prefix}：{native_count}处规格标签与{count}个候选段不一致，需核对。')
+        if count!=native_count:data['warnings'].append(f'{prefix}：{native_count}处钢材标签与{count}根钢材不一致，需核对。')
         elif coverage:data['warnings'].append(f'{prefix} 总数虽相同，但各规格数量覆盖不一致，请核对。')
         if not count:data['warnings'].append(f'{prefix} 未识别到构件，不能作为零根验收。')
     return data
