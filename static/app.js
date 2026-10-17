@@ -7,7 +7,7 @@ let activeView=null, activeObservation=null, clickMode='', evidenceFocus=null, m
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
 function showError(error) { $('#error').hidden=false; $('#error').textContent=error.message||String(error); }
 async function api(path,method='GET',body=null) { const opts={method}; if(body) { opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body); } const r=await fetch(path,opts);let data;try{data=await r.json();}catch{throw Error('服务器返回了无法解析的响应。');}if(!r.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));return data; }
-function settings() { const raw=$('#max-concurrency').value.trim();const parallel=Number(raw);if(raw&&(!Number.isInteger(parallel)||parallel<1))throw Error('AI请求并发数必须是正整数。');return {base_url:$('#base-url').value,api_key:$('#api-key').value,model:$('#model').value,max_concurrency:raw?String(parallel):''}; }
+function settings() { const raw=$('#max-concurrency').value.trim();const parallel=Number(raw);if(raw&&(!Number.isInteger(parallel)||parallel<1))throw Error('AI请求并发数必须是正整数。');return {base_url:$('#base-url').value,api_key:$('#api-key').value,model:$('#model').value,max_concurrency:raw?String(parallel):'',label_color_mode:$('#label-color-mode').value}; }
 async function refreshTrace() {
     if(!jobId)return;
     try {
@@ -272,6 +272,7 @@ function renderConstructionCatalog(data,target,panel) {
     function show(id){
         const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren(node('h3',view.title));
         if(view.image_file){const url=`/api/jobs/${jobId}/views/${view.image_file}`;panel.append(node('img','',{src:url,alt:view.title,style:'max-width:100%'}),node('a','打开300DPI高清图',{href:url,target:'_blank'}));}
+        if(view.colorized_image_file){const url=`/api/jobs/${jobId}/views/${view.colorized_image_file}`;panel.append(node('a','打开钢材名/轴线名着色图（300DPI）',{href:url,target:'_blank'}));}
         panel.append(input('视图原始标题',view.title,v=>setField(view,'title',v)));
         panel.append(input('平面/立面名称',view.plane_name,v=>setField(view,'plane_name',v)));
         panel.append(select('类型',view.kind,[['PLAN','平面'],['ELEVATION','立面']],v=>setField(view,'kind',v)));

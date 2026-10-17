@@ -12,6 +12,7 @@ from pathlib import Path
 from .axis_catalog import build_axis_catalog
 from .domain import StageTwo
 from .drawing_input import render_png,write_view_image
+from .label_colors import COLORIZER_VERSION,colorize_view
 from .llm_runner import _api_settings
 from .member_recognition import make_input,recognition_prompt,ImageMemberResponse,validate_rows,validate_ledger,allowed_model_tags
 from .native_pdf import write_json
@@ -44,17 +45,30 @@ def freeze_images(directory,data):
         filename=view.get('image_file','')
         if Path(filename).name!=filename:view['image_file']='';filename=''
         current=directory/'views'/filename
-        if view.get('image_file') and view.get('image_bbox')==view['bbox'] and current.is_file():
+        fresh=view.get('image_file') and view.get('image_bbox')==view['bbox'] and current.is_file()
+        if fresh:
             if not view.get('detail_files') and view.get('kind')!='ISOMETRIC':view['detail_files']=detail_images(directory,filename)
-            continue
+        else:
+            entry={**entries[view['page_id']],'crop':view['bbox']}
+            filename=f"asset-{uuid.uuid4().hex}-{view['id']}_300dpi.png"
+            image=render_png(entry,dpi=300)
+            (directory/'views').mkdir(exist_ok=True)
+            (directory/'views'/filename).write_bytes(image)
+            view['image_file']=filename;view['image_bbox']=list(view['bbox'])
+            view['detail_files']=detail_images(directory,filename) if view.get('kind')!='ISOMETRIC' else []
+            write_view_image(entry,directory/'views'/f"{view['id']}.jpg")
+        colored_name=view.get('colorized_image_file','')
+        colored_path=directory/'views'/Path(colored_name).name
+        if fresh and colored_name.endswith(f'_labels_{COLORIZER_VERSION}_300dpi.png') and colored_path.is_file():continue
         entry={**entries[view['page_id']],'crop':view['bbox']}
-        filename=f"asset-{uuid.uuid4().hex}-{view['id']}_300dpi.png"
-        image=render_png(entry,dpi=300)
-        (directory/'views').mkdir(exist_ok=True)
-        (directory/'views'/filename).write_bytes(image)
-        view['image_file']=filename;view['image_bbox']=list(view['bbox'])
-        view['detail_files']=detail_images(directory,filename) if view.get('kind')!='ISOMETRIC' else []
-        write_view_image(entry,directory/'views'/f"{view['id']}.jpg")
+        colored,audit=colorize_view(entry,(directory/'views'/filename).read_bytes())
+        colored_name=filename.replace('_300dpi.png',f'_labels_{COLORIZER_VERSION}_300dpi.png')
+        (directory/'views'/colored_name).write_bytes(colored)
+        view['colorized_image_file']=colored_name
+        view['colorized_detail_files']=detail_images(directory,colored_name) if view.get('kind')!='ISOMETRIC' else []
+        audit_name=colored_name.replace('.png','_audit.json')
+        write_json(directory/'views'/audit_name,audit)
+        view['colorized_label_audit_file']=audit_name
 
 
 def prepare_catalog(directory,settings,emit,audit,*,reuse_saved=False):
@@ -97,7 +111,12 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             item['status']['status']='region_pending'
             item['warnings'].append(f"{view['title']} 第一阶段裁切尚未确认，未识别构件。")
             continue
-        image_path=directory/'views'/Path(view.get('image_file','')).name
+        use_colored=settings.get('label_color_mode','original')=='colored'
+        selected_file=view.get('colorized_image_file','') if use_colored else view.get('image_file','')
+        selected_details=view.get('colorized_detail_files',[]) if use_colored else view.get('detail_files',[])
+        image_path=directory/'views'/Path(selected_file).name
+        if use_colored and (not selected_file or not image_path.is_file()):
+            raise ValueError(f"{view['title']} 缺少第一阶段生成的标签着色图，请重试第一阶段。")
         if not view.get('image_file') or not image_path.is_file() or view.get('image_bbox')!=view['bbox']:
             raise ValueError(f"{view['title']} 缺少与已确认区域一致的高清图片，请返回第一阶段修正。")
         bundle=make_input(pages[view['page_id']],view,one)
@@ -105,14 +124,14 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         bundle['image']={'width_px':width,'height_px':height,'dpi':300,'format':'PNG'}
         input_path=folder/f"{view['id']}_input.json";write_json(input_path,bundle)
         context=bundle['native_evidence']
-        audit.event('IMAGE_MEMBER_REQUEST',view_id=view['id'],image_file=view['image_file'],
+        audit.event('IMAGE_MEMBER_REQUEST',view_id=view['id'],image_file=selected_file,label_color_mode='colored' if use_colored else 'original',
                     dispatch_state='prepared',
                     image_sha256=hashlib.sha256(image).hexdigest(),width_px=width,height_px=height,dpi=300,
-                    detail_files=view.get('detail_files',[]),
+                    detail_files=selected_details,
                     input_file=str(input_path.relative_to(directory)),native_text_sent=False,vectors_sent=False,
                     text_count=len(context['texts']),vector_count=len(context['vectors']),vector_total=context['vector_total'],
                     vector_context_truncated=context['vector_context_truncated'])
-        item.update(bundle=bundle,image_path=image_path)
+        item.update(bundle=bundle,image_path=image_path,selected_details=selected_details)
 
     def checkpoint():
         # Only this coordinator writes the shared ledger/checkpoint. Rebuild in
@@ -148,7 +167,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             # distinct views retain the configured concurrency.
             client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
             entry={**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
-                   'detail_paths':[str(directory/'views'/Path(name).name) for name in view.get('detail_files',[])],
+                   'detail_paths':[str(directory/'views'/Path(name).name) for name in item['selected_details']],
                    'allowed_view_tags':allowed_model_tags(bundle)}
             prompt=recognition_prompt(bundle)
             previous=None;feedback=[];rounds=[];best=None

@@ -90,7 +90,7 @@ def create_app(root=ROOT, start_workers=True):
     def launch(job_id,stage,settings=None,*,reuse_saved=False):
         if settings and stage in (1,2,3):
             existing=credentials.get(job_id,{})
-            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode','max_concurrency','reasoning_effort') and v}}
+            credentials[job_id]={**existing,**{k:v for k,v in settings.items() if k in ('base_url','api_key','model','review_mode','max_concurrency','reasoning_effort','label_color_mode') and v}}
         if start_workers:
             threading.Thread(target=worker,args=(job_id,stage,reuse_saved),daemon=True).start()
 
@@ -99,7 +99,10 @@ def create_app(root=ROOT, start_workers=True):
     @application.post('/api/jobs')
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
                    api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True),
-                   max_concurrency:int|None=Form(None,ge=1),auto_run:bool=Form(True)):
+                   max_concurrency:int|None=Form(None,ge=1),auto_run:bool=Form(True),
+                   label_color_mode:str=Form('original')):
+        if label_color_mode not in ('original','colored'):
+            raise HTTPException(400,'标签图像模式必须为 original 或 colored。')
         pdfs=[file for file in files if file.filename and file.filename.lower().endswith('.pdf')]
         if not pdfs:
             raise HTTPException(400,'请至少上传一个 PDF。')
@@ -116,7 +119,8 @@ def create_app(root=ROOT, start_workers=True):
         store.create(job_id)
         (jobs/job_id/'workflow.json').write_text(json.dumps({'auto_run':auto_run}),encoding='utf-8')
         launch(job_id,1,{'base_url':base_url,'api_key':api_key,'model':model,
-                        'max_concurrency':str(max_concurrency) if max_concurrency is not None else ''})
+                        'max_concurrency':str(max_concurrency) if max_concurrency is not None else '',
+                        'label_color_mode':label_color_mode})
         return {'id':job_id,'state':'queued','schema_version':2}
 
     @application.get('/api/jobs')
@@ -269,6 +273,8 @@ def create_app(root=ROOT, start_workers=True):
                                if v.get('localization') or store.stage(job_id,n)['data'].get('recognition_mode')=='view_ledger')
                 allowed.update(v['image_file'] for v in store.stage(job_id,n)['data'].get('views',[]) if v.get('image_file'))
                 allowed.update(name for v in store.stage(job_id,n)['data'].get('views',[]) for name in v.get('detail_files',[]))
+                allowed.update(v['colorized_image_file'] for v in store.stage(job_id,n)['data'].get('views',[]) if v.get('colorized_image_file'))
+                allowed.update(name for v in store.stage(job_id,n)['data'].get('views',[]) for name in v.get('colorized_detail_files',[]))
             except StoreError:
                 pass
         path=folder/'views'/filename
@@ -277,6 +283,8 @@ def create_app(root=ROOT, start_workers=True):
             for view in snapshot.get('data',{}).get('views',[]):
                 if view.get('image_file'):allowed.add(view['image_file'])
                 allowed.update(view.get('detail_files',[]))
+                if view.get('colorized_image_file'):allowed.add(view['colorized_image_file'])
+                allowed.update(view.get('colorized_detail_files',[]))
         if path.resolve().parent!=(folder/'views').resolve():raise HTTPException(404,'未找到图纸预览。')
         if filename in {p['id']+'.jpg' for p in native_index(job_id)} and not path.is_file():
             from .drawing_input import write_view_image
