@@ -62,7 +62,8 @@ def freeze_images(directory,data):
         if fresh and colored_name.endswith(f'_labels_{COLORIZER_VERSION}_300dpi.png') and colored_path.is_file():continue
         entry={**entries[view['page_id']],'crop':view['bbox']}
         colored,audit=colorize_view(entry,(directory/'views'/filename).read_bytes())
-        colored_name=filename.replace('_300dpi.png',f'_labels_{COLORIZER_VERSION}_300dpi.png')
+        stem=filename[:-len('_300dpi.png')] if filename.endswith('_300dpi.png') else Path(filename).stem
+        colored_name=f'{stem}_labels_{COLORIZER_VERSION}_300dpi.png'
         (directory/'views'/colored_name).write_bytes(colored)
         view['colorized_image_file']=colored_name
         view['colorized_detail_files']=detail_images(directory,colored_name) if view.get('kind')!='ISOMETRIC' else []
