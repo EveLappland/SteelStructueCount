@@ -167,6 +167,8 @@ class MemberRecognitionTests(unittest.TestCase):
         empty=ImageMemberResponse.model_validate({'members':[{**model_row,'view_tags':[]}]}).model_dump()['members'][0]
         row=validate_rows([empty],elevation,one)[0]
         self.assertEqual(row['view_tags'],['302003-PR001I/A'])
+        plan_row=validate_rows([empty],plan,one)[0]
+        self.assertEqual(plan_row['view_tags'],['EL.107.500(TOS)'])
         repeated=validate_rows([{**parsed,'view_tags':[elevation['title'],elevation['fixed_label']]}],elevation,one)[0]
         self.assertEqual(repeated['view_tags'],['302003-PR001I/A'])
 
