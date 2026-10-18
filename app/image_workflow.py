@@ -16,7 +16,7 @@ from .label_colors import COLORIZER_VERSION,colorize_view
 from .llm_runner import _api_settings
 from .member_recognition import make_input,recognition_prompt,ImageMemberResponse,validate_rows,validate_ledger,allowed_model_tags
 from .native_pdf import write_json
-from .stage_two_iteration import assess_rows,revision_prompt
+from .stage_two_iteration import assess_rows
 from .ai_concurrency import view_concurrency
 from .view_filter import role
 
@@ -164,54 +164,44 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             audit.event('VIEW_RECOGNITION_STARTED',view_id=view['id'],title=view['title'],
                         active_views=running,concurrency_limit=limit)
             emit(f"开始识图：{view['title']}；当前同时处理 {running}/{workers} 个视图。")
-            # Each worker owns its HTTP client. Its rounds are sequential while
-            # distinct views retain the configured concurrency.
+            # Each worker owns one HTTP client and makes one recognition call.
+            # Independent views retain the configured concurrency.
             client=OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1)
             entry={**entries[view['page_id']],'id':view['id'],'crop':view['bbox'],'image_path':str(image_path),'image_dpi':300,
                    'detail_paths':[str(directory/'views'/Path(name).name) for name in item['selected_details']],
                    'allowed_view_tags':allowed_model_tags(bundle)}
             prompt=recognition_prompt(bundle)
-            previous=None;feedback=[];rounds=[];best=None
-            for round_number in range(1,4):
-                round_prompt=prompt if round_number==1 else revision_prompt(prompt,previous,feedback,round_number)
-                try:
-                    payload=model_call(client,model,round_prompt,entry,
-                        folder/f"{view['id']}_members_round{round_number}.json",ImageMemberResponse,
-                        reuse_saved=reuse_saved,emit=emit,audit=audit,
-                        reasoning_effort=settings.get('reasoning_effort','high'),auto_retry=False)
-                    rows=validate_rows(payload['members'],view,one)
-                    assessment=assess_rows(rows,pages[view['page_id']],view)
-                    score=len(assessment['feedback'])
-                    rounds.append({'round':round_number,'status':'valid','score':score,'assessment':assessment,
-                                   'response_file':f"{view['id']}_members_round{round_number}.json"})
-                    audit.event('VIEW_RECOGNITION_ROUND',view_id=view['id'],round=round_number,
-                                score=score,feedback=assessment['feedback'])
-                    if best is None or score<=best['score']:
-                        best={'round':round_number,'score':score,'rows':rows,'assessment':assessment}
-                    previous=payload
-                    feedback=assessment['feedback']
-                    if not feedback:break
-                except Exception as exc:
-                    reason=audit.scrub(str(exc))
-                    feedback=[{'check':'response_error','message':reason}]
-                    rounds.append({'round':round_number,'status':'failed','error':reason})
-                    audit.event('VIEW_RECOGNITION_ROUND_FAILED',view_id=view['id'],round=round_number,error=reason)
-                    if round_number==3 and best is None:
-                        write_json(folder/f"{view['id']}_rounds.json",
-                                   {'view_id':view['id'],'rounds':rounds,'selected_round':None})
-                        raise
-                if round_number<3:emit(f"{view['title']} 本地校验需复查，进入第 {round_number+1}/3 轮。")
-            write_json(folder/f"{view['id']}_rounds.json",{'view_id':view['id'],'rounds':rounds,
-                      'selected_round':best['round'] if best else None,
-                      'selection_reason':'选择本地校验问题最少的有效轮次，同分取较新轮次。'})
-            if best is None:raise ValueError('三轮识图均未产生有效台账。')
-            rows=best['rows'];assessment=best['assessment']
+            response_file=f"{view['id']}_members_round1.json"
+            try:
+                payload=model_call(client,model,prompt,entry,folder/response_file,ImageMemberResponse,
+                    reuse_saved=reuse_saved,emit=emit,audit=audit,
+                    reasoning_effort=settings.get('reasoning_effort','high'),auto_retry=False)
+                rows=validate_rows(payload['members'],view,one)
+                source_tag=bundle['current_view_tag']
+                audit.event('SOURCE_VIEW_TAG_ENRICHMENT',view_id=view['id'],source_tag=source_tag,
+                            rows_added=sum(source_tag not in member['view_tags'] for member in payload['members']),
+                            reason='模型只返回构件所在轴线；程序补入来源图纸标题对应的平面或立面。')
+                assessment=assess_rows(rows,pages[view['page_id']],view)
+            except Exception as exc:
+                reason=audit.scrub(str(exc))
+                write_json(folder/f"{view['id']}_rounds.json",
+                           {'view_id':view['id'],'rounds':[{'round':1,'status':'failed','error':reason}],
+                            'selected_round':None})
+                audit.event('VIEW_RECOGNITION_ROUND_FAILED',view_id=view['id'],round=1,error=reason)
+                raise
+            write_json(folder/f"{view['id']}_rounds.json",
+                       {'view_id':view['id'],'rounds':[{'round':1,'status':'valid',
+                        'score':len(assessment['feedback']),'assessment':assessment,
+                        'response_file':response_file}], 'selected_round':1,
+                        'selection_reason':'每个视图仅识图一次；本地校验问题保留供核对，不触发模型迭代。'})
+            audit.event('VIEW_RECOGNITION_ROUND',view_id=view['id'],round=1,
+                        score=len(assessment['feedback']),feedback=assessment['feedback'],selected=True)
             count=assessment['member_cnt'];native_count=assessment['label_count']
             coverage=assessment['coverage_differences']
             outcome={'rows':rows,'warnings':[], 'status':{'view_id':view['id'],
                 'status':'completed' if rows else 'empty','member_cnt':count,
                 'label_count':native_count,'coverage_differences':coverage,
-                'rounds_attempted':len(rounds),'selected_round':best['round'],
+                'rounds_attempted':1,'selected_round':1,
                 'remaining_checks':assessment['feedback']}}
             audit.event('LOCAL_PROFILE_COVERAGE_CHECK',view_id=view['id'],differences=coverage,
                         reason='只在本地比较各规格标签数与member_cnt合计；不强制补齐或删除。')

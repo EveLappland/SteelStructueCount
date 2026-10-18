@@ -113,6 +113,16 @@ class ViewConcurrencyTests(unittest.TestCase):
         self.assertEqual(batches[-1]['worker_count'],3)
         self.assertEqual(len(result['view_members']),3)
 
+    def test_local_coverage_difference_does_not_trigger_another_model_call(self):
+        calls=[]
+        def model(client,model,prompt,entry,*args,**kwargs):
+            calls.append(entry['id'])
+            return self.payload(entry)
+        result=self.run_views(model)
+        self.assertEqual(sorted(calls),['view-0','view-1','view-2'])
+        self.assertTrue(all(a['rounds_attempted']==1 and a['selected_round']==1
+                            for a in result['view_analysis']))
+
     def test_duplicate_view_ids_fail_before_any_api_call(self):
         self.one['views'][1]['id']=self.one['views'][0]['id']
         with patch('app.image_workflow._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call') as model:

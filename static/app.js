@@ -179,9 +179,9 @@ function renderViewLedger() {
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    target.append(table(['视图','识别状态','轮次（采用/尝试）','钢材标签数','钢材数（未去重）','规格覆盖差异','尚存校验问题'],data.view_analysis.map(a=>[
+    target.append(table(['视图','识别状态','模型调用次数','钢材标签数','钢材数（未去重）','规格覆盖差异','尚存校验问题'],data.view_analysis.map(a=>[
         data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,
-        a.rounds_attempted?`${a.selected_round}/${a.rounds_attempted}`:'—',a.label_count,a.member_cnt,
+        a.rounds_attempted||'—',a.label_count,a.member_cnt,
         (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}根钢材`).join('；'),
         (a.remaining_checks||[]).map(c=>c.message).join('；')])));
     const choices=data.views.filter(v=>LedgerTools.viewRole(v)==='MEMBERS');

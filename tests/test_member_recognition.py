@@ -99,7 +99,7 @@ class MemberRecognitionTests(unittest.TestCase):
     def test_missing_lengths_bad_tags_and_catalog_are_pending(self):
         row=validate_rows([{**self.row,'length_mm':None,'view_tags':['iso','unknown'],'spec':'HEA999',
                             'issue':'标尺不完整'}],self.view,self.one)[0]
-        self.assertGreaterEqual(len(row['checks']),5)
+        self.assertGreaterEqual(len(row['checks']),4)
         self.assertEqual(row['length_mm'],None)
         corrected={**row,'spec':'HEA240','length_mm':6000,'view_tags':['plan1','elA'],'issue':None}
         self.assertEqual(validate_ledger({**self.one,'view_members':[corrected]})['view_members'][0]['checks'],[])
@@ -148,6 +148,27 @@ class MemberRecognitionTests(unittest.TestCase):
         bundle=make_input(page,plan,one)
         self.assertEqual(bundle['current_view_tag'],'EL.107.500(TOS)')
         self.assertEqual(bundle['view_catalog'][1]['tag'],'302003-PR001I/1')
+
+    def test_source_drawing_plane_is_added_to_axis_only_model_tags(self):
+        from app.member_recognition import ImageMemberResponse
+        plan={**self.view,'title':'PLAN AT EL.107.500(TOS)'}
+        elevation={'id':'el1','page_id':'p','kind':'ELEVATION',
+                   'title':'ELEVATION ON ALIGNMENT 302003-PR001I/A',
+                   'fixed_label':'302003-PR001I/A'}
+        one={'views':[plan,elevation],'profile_catalog':['HEA240']}
+        model_row={'spec':'HEA240','view_tags':['EL.107.500(TOS)'],
+                   'member_cnt':1,'length':{'method':'DIRECT','direct_mm':4000,
+                   'horizontal_mm':None,'vertical_mm':None,'evidence':'标尺4000'},
+                   'location':'标高107.500横梁','issue':None}
+        parsed=ImageMemberResponse.model_validate({'members':[model_row]}).model_dump()['members'][0]
+        row=validate_rows([parsed],elevation,one)[0]
+        self.assertEqual(row['view_tags'],['302003-PR001I/A','EL.107.500(TOS)'])
+        self.assertNotIn('标签未包含当前来源视图',row['checks'])
+        empty=ImageMemberResponse.model_validate({'members':[{**model_row,'view_tags':[]}]}).model_dump()['members'][0]
+        row=validate_rows([empty],elevation,one)[0]
+        self.assertEqual(row['view_tags'],['302003-PR001I/A'])
+        repeated=validate_rows([{**parsed,'view_tags':[elevation['title'],elevation['fixed_label']]}],elevation,one)[0]
+        self.assertEqual(repeated['view_tags'],['302003-PR001I/A'])
 
     def test_response_normalizes_titles_and_deduplicates_only_tags(self):
         from app.pipeline import parse_model_content

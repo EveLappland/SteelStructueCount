@@ -52,7 +52,9 @@ class LengthInput(Contract):
 
 class ImageMember(Contract):
     spec: str = Field(min_length=1, max_length=120)
-    view_tags: list[str] = Field(min_length=1)
+    # The model reports only axis/level names. A member need not lie on one;
+    # the server adds the drawing's own plane after parsing the response.
+    view_tags: list[str]
     member_cnt: StrictInt = Field(ge=1, le=10000)
     length: LengthInput
     location: str = Field(max_length=4000)
@@ -61,7 +63,7 @@ class ImageMember(Contract):
     @field_validator('view_tags')
     @classmethod
     def plane_names_only(cls, values):
-        return RecognizedMember.plane_names_only(values)
+        return normalize_view_tags(values)
 
 
 class ImageMemberResponse(Contract):
@@ -168,8 +170,11 @@ def validate_rows(rows, view, stage_one):
             length_input = length_input.model_dump()
         # Saved ledgers may predate location. Do not pretend their old basis is
         # an axis location; retain it separately and ask for a position on edit.
-        row = RecognizedMember.model_validate({k: raw.get(k,'') if k=='location' else raw[k]
-                                              for k in RecognizedMember.model_fields}).model_dump()
+        source_tag=view_tag(source)
+        prepared={k: raw.get(k,'') if k=='location' else raw[k]
+                  for k in RecognizedMember.model_fields if k!='view_tags'}
+        prepared['view_tags']=normalize_view_tags([*raw.get('view_tags',[]),source_tag])
+        row = RecognizedMember.model_validate(prepared).model_dump()
         issues = list(calculated_issues)
         tags=[]
         for tag in row['view_tags']:
@@ -179,7 +184,6 @@ def validate_rows(rows, view, stage_one):
                 tags.append(tag)
                 if len(matches)>1:issues.append('视图名称对应多个目录项，需确认标签')
         row['view_tags'] = sorted(set(tags))
-        if view_tag(source) not in row['view_tags']: issues.append('标签未包含当前来源视图')
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
         axes=stage_one.get('axis_catalog',{})
         current_axes=set(normalize_view_tags(axes.get('per_view',{}).get(view['id'],[])))
