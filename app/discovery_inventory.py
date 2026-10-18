@@ -4,7 +4,7 @@ from collections import defaultdict
 from .native_pdf import inside
 
 PROFILE = re.compile(
-    r'(?<![\w])(?:(?P<assembly>\d+LF?\s*[- ]\s*)?'
+    r'(?<![\w])(?:(?P<assembly>\d+(?:LF|F|L)\s*[- ]\s*)?'
     r'(?P<angle>L\d+(?:\.\d+)?\s*[X*×]\s*\d+(?:\.\d+)?(?:\s*[X*×]\s*\d+(?:\.\d+)?)?)'
     r'|(?P<rolled>HE[ABM]\d+|IPET?\d+|IPN\d+|UP[NE]\d+)'
     r'|(?P<hollow>(?:RHS|SHS|CHS)\s*\d+(?:\.\d+)?(?:\s*[X*×]\s*\d+(?:\.\d+)?){1,2}))'

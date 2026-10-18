@@ -9,6 +9,8 @@ class DiscoveryInventoryTest(unittest.TestCase):
         self.assertFalse(list(labels('EL.107.500 TOS 8000 BP1 N8 10 THK STIFF PIPE RACK')))
         self.assertEqual(list(labels('2L-L80×8 L100x75x8 SHS100*100*6')),
                          [('L80*8',2),('L100*75*8',1),('SHS100*100*6',1)])
+        self.assertEqual(list(labels('2F-L120*12 2F- L80×8')),
+                         [('L120*12',2),('L80*8',2)])
 
     def test_catalog_survives_missing_members_and_view_region(self):
         texts=[{'id':'p:t1','text':'HEA260 /EPB','bbox':[.1,.1,.2,.2]},

@@ -12,7 +12,7 @@ from .domain import LengthCandidate, Member, StageOne, StageTwo, StageThree
 def section(profile):
     label = str(profile).upper().replace('×', '*').replace(' ', '')
     label = re.sub(r'/(?:EPB|EPW|EP|EMH|EMTF|LT)\b', '', label)
-    match = re.fullmatch(r'(\d+)L(?:F)?[-_]*(L\d+(?:[X*]\d+)?)', label)
+    match = re.fullmatch(r'(\d+)(?:LF|F|L)[-_]*(L\d+(?:[X*]\d+(?:[X*]\d+)?)?)', label)
     if match:
         multiplier = int(match[1])
         if not 1 <= multiplier <= 8:

@@ -36,6 +36,43 @@ def assess_rows(rows, page, view):
             'coverage_differences': coverage, 'feedback': feedback}
 
 
+def revision_regressions(previous_rows, proposed_rows, current_tag):
+    """Detect lost information between two model rounds, without claiming it is true.
+
+    Native labels support base-profile counts, but cannot settle combination
+    prefixes, image-only plane tags or dimensions. Keep those observations until
+    the model explicitly reconciles them; never reward their silent deletion.
+    """
+    prior_angles = Counter()
+    next_angles = Counter()
+    prior_tags = set()
+    next_tags = set()
+    for rows, angles, tags in ((previous_rows, prior_angles, prior_tags),
+                               (proposed_rows, next_angles, next_tags)):
+        for row in rows:
+            _, multiplier = section(row['spec'])
+            if multiplier > 1:
+                angles[multiplier] += row['member_cnt']
+            tags.update(tag for tag in row['view_tags'] if tag != current_tag)
+    feedback = []
+    for multiplier, count in sorted(prior_angles.items()):
+        if next_angles[multiplier] < count:
+            feedback.append({'check': 'combination_identity_regression',
+                             'component_count': multiplier, 'previous_member_cnt': count,
+                             'proposed_member_cnt': next_angles[multiplier],
+                             'message': '修订后组合前缀或组合段数减少；请依据图片核对，不要仅为消除 PDF 文字差异而改成单角钢。'})
+    for tag in sorted(prior_tags - next_tags):
+        feedback.append({'check': 'view_tag_regression', 'view_tag': tag,
+                         'message': '修订后丢失此前识别的跨面名称；请依据图片核对，第一阶段当前视图目录可能不完整。'})
+    old_missing = sum(row['member_cnt'] for row in previous_rows if row['length_mm'] is None)
+    new_missing = sum(row['member_cnt'] for row in proposed_rows if row['length_mm'] is None)
+    if new_missing > old_missing:
+        feedback.append({'check': 'length_regression', 'previous_missing': old_missing,
+                         'proposed_missing': new_missing,
+                         'message': '修订后缺少长度的钢材增加；请核对是否丢失已识别的尺寸。'})
+    return feedback
+
+
 def revision_prompt(original_prompt, previous, feedback, round_number):
     guidance = (Path(__file__).parent / 'prompts' / 'stage_two_revision.md').read_text(encoding='utf-8')
     data = {'round': round_number, 'previous_ledger': previous, 'local_checks': feedback}

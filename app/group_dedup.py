@@ -23,7 +23,6 @@ def build_group_review(data):
     analysis={v['view_id']:v for v in data.get('view_analysis',[])}
     catalog=data.get('axis_catalog',{})
     known={view_tag(v) for v in views.values()}|set(normalize_view_tags(a['name'] for a in catalog.get('axes',[])))
-    bound={identity:set(normalize_view_tags(names)) for identity,names in catalog.get('per_view',{}).items()}
     profiles={section(p)[0] for p in data.get('profile_catalog',[])}
     buckets={};seen=set();invalid=[];input_count=0
     for raw in data.get('view_members',[]):
@@ -54,7 +53,6 @@ def build_group_review(data):
         if not row['location']:issues.append('缺少位置说明')
         if view_tag(views[source]) not in tags:issues.append('未包含当前来源面名称')
         if set(tags)-known:issues.append('目录外的面名称')
-        if source in bound and set(tags)-bound[source]:issues.append('面名称未绑定到来源视图')
         if profile not in profiles:issues.append('规格不在目录内')
         if issues:group['row_issues'].append({'row_id':identity,'issues':sorted(set(issues))})
 

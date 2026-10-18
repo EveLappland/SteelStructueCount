@@ -48,7 +48,7 @@ class MemberRecognitionTests(unittest.TestCase):
         import json
         context=json.loads(text.split('输入包：\n',1)[1])
         self.assertEqual(context['profile_catalog'],self.one['profile_catalog'])
-        self.assertEqual([v[0] for v in context['native_evidence']['vectors']],['line-in'])
+        self.assertNotIn('native_evidence',context)
         self.assertIn('HEA240',text)
         for forbidden in ('OUTSIDE_SECRET','line-out','TEXT_SECRET','LABEL_SECRET'):
             self.assertNotIn(forbidden,text)
@@ -103,6 +103,16 @@ class MemberRecognitionTests(unittest.TestCase):
         self.assertEqual(row['length_mm'],None)
         corrected={**row,'spec':'HEA240','length_mm':6000,'view_tags':['plan1','elA'],'issue':None}
         self.assertEqual(validate_ledger({**self.one,'view_members':[corrected]})['view_members'][0]['checks'],[])
+
+    def test_globally_known_plane_is_not_rejected_for_missing_current_binding(self):
+        one={**self.one,'axis_catalog':{'axes':[{'name':'GRID/2'}],
+                                       'per_view':{'plan1':['EL.1.000(TOS)']}}}
+        raw={**self.row,'view_tags':['EL.1.000(TOS)','GRID/2']}
+        self.assertEqual(validate_rows([raw],self.view,one)[0]['checks'],[])
+
+    def test_2f_angle_is_checked_against_base_profile_catalog(self):
+        raw={**self.row,'spec':'2F-L100*10'}
+        self.assertEqual(validate_rows([raw],self.view,self.one)[0]['checks'],[])
 
     def test_duplicate_identity_rejected(self):
         row=validate_rows([self.row],self.view,self.one)[0]
@@ -226,12 +236,14 @@ class MemberRecognitionTests(unittest.TestCase):
             client.chat.completions.create.side_effect=[response('{"members":[],"members":[]}'),
                                                         response(json.dumps({'members':[self.row]}))]
             with patch('app.pipeline.render_data_uri',return_value='data:image/png;base64,test'):
-                result=model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse)
+                result=model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse,
+                                  auto_retry=True)
             self.assertEqual(result['members'][0]['member_cnt'],2)
             self.assertEqual(client.chat.completions.create.call_count,2)
             self.assertEqual(client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['type'],'image_url')
             self.assertTrue(target.with_suffix('.invalid.json').is_file())
             client.chat.completions.create.side_effect=[response('{}'),response('{}')]
             with patch('app.pipeline.render_data_uri',return_value='data:image/png;base64,test'),self.assertRaises(ValidationError):
-                model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse)
+                model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse,
+                           auto_retry=True)
             self.assertEqual(client.chat.completions.create.call_count,4)

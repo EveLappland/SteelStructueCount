@@ -90,3 +90,14 @@ class AxisCatalogTests(unittest.TestCase):
         self.assertEqual(checked['checks'],[])
         self.assertIn('EL.23.450(TOS)',checked['view_tags'])
         self.assertNotIn(plan['title'],checked['view_tags'])
+
+    def test_ai_plane_list_is_supplemented_by_native_names_in_its_crop(self):
+        view={'id':'v','page_id':'p','kind':'PLAN','title':'PLAN AT EL.20.000(TOS)',
+              'plane_name':'EL.20.000(TOS)','axis_labels':['FRAME/A'],
+              'bbox':[0,0,.5,1]}
+        page={'id':'p','texts':[
+            {'id':'inside','text':'FRAME/2','bbox':[.1,.1,.2,.2]},
+            {'id':'outside','text':'FRAME/3','bbox':[.7,.1,.8,.2]}]}
+        catalog=build_axis_catalog([page],[view])
+        self.assertEqual(catalog['per_view']['v'],
+                         ['EL.20.000(TOS)','FRAME/2','FRAME/A'])

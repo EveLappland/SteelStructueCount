@@ -35,7 +35,8 @@ def build_axis_catalog(pages,views):
         elif view['kind']=='PLAN':add(view.get('plane_name') or axis_name(view['title']) or view['title'],[view['id']],uploaded=view['id'],kind='PLAN')
         if view.get('axes_reviewed') or view.get('plane_name'):
             for name in view.get('axis_labels',[]):add(name,[view['id']],{'kind':'CONFIRMED_VIEW_REFERENCE' if view.get('axes_reviewed') else 'AI_VIEW_CATALOG'})
-            continue
+            if view.get('axes_reviewed'):
+                continue
         for mark in view.get('axis_marks',[]):
             if mark.get('direction') not in ('X','Y','Z'):continue
             if mark.get('direction')=='Z' and not axis_name(mark['label']):continue
@@ -46,7 +47,7 @@ def build_axis_catalog(pages,views):
         local=[v for v in views if v.get('page_id')==page['id'] and v['kind']!='ISOMETRIC' and v.get('region_confirmed',True)]
         for text in page['texts']:
             name=axis_name(text['text'])
-            owners=[v['id'] for v in local if not v.get('axes_reviewed') and not v.get('plane_name') and inside(text,v['bbox'])]
+            owners=[v['id'] for v in local if not v.get('axes_reviewed') and inside(text,v['bbox'])]
             if name and owners:
                 add(name,owners,{'id':text['id'],'page_id':page['id'],'text':text['text'],'bbox':text['bbox']})
     # Full native names take precedence over short marks only when unambiguous

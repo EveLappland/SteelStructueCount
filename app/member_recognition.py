@@ -134,7 +134,7 @@ def make_input(page, view, stage_one):
                            **view_context(page,view['bbox'])},
         'axis_catalog':{'axes':[{'name':a['name'],'kind':a.get('kind','ELEVATION')} for a in axes['axes']],
                         'axis_count':axes['axis_count'],
-                        'definition':'轴线或面名称：Alignment立面或EL标高平面；与当前图纸绑定，不代表均已上传独立视图',
+                        'definition':'轴线或面名称：Alignment立面或EL标高平面。current_axes 是当前视图已提取名称，可能漏取；不能据此删除图片中可见的面标签，也不代表均已上传独立视图',
                         'current_axes':axes['per_view'].get(view['id'],[])},
         'view_catalog':view_catalog,
     }
@@ -185,11 +185,9 @@ def validate_rows(rows, view, stage_one):
                 if len(matches)>1:issues.append('视图名称对应多个目录项，需确认标签')
         row['view_tags'] = sorted(set(tags))
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
-        axes=stage_one.get('axis_catalog',{})
-        current_axes=set(normalize_view_tags(axes.get('per_view',{}).get(view['id'],[])))
-        axis_names={normalize_view_tag(a['name']) for a in axes.get('axes',[])}
-        if any(tag in axis_names and tag not in current_axes for tag in row['view_tags']):
-            issues.append('引用的轴线或面名称未绑定到第一阶段的当前视图')
+        # Stage one's per-view list is a partial observation, not proof that a
+        # globally known plane is absent from this member. Preserve the model's
+        # image-based cross-view tags for later reconciliation.
         if section(row['spec'])[0] not in profiles: issues.append('规格不在第一阶段已确认目录')
         if row['length_mm'] is None: issues.append('缺少可确认的长度依据')
         if not row['location']: issues.append('缺少构件位置说明，需补充核对')
