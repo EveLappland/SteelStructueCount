@@ -61,9 +61,14 @@ def main():
     pdfs=sorted((ROOT/'data/jobs'/args.source_job/'uploads').glob('*.pdf'))
     if not pdfs or not args.baseline.is_file():parser.error('找不到源PDF或基准文件')
     started=time.monotonic()
-    with httpx.Client(base_url=args.base,timeout=60) as client:
+    with httpx.Client(base_url=args.base,timeout=60,limits=httpx.Limits(max_keepalive_connections=0)) as client:
         def get(path):
-            result=client.get(path);result.raise_for_status();return result.json()
+            for attempt in range(3):
+                try:
+                    result=client.get(path);result.raise_for_status();return result.json()
+                except httpx.TransportError:
+                    if attempt==2:raise
+                    time.sleep(1)
         if args.resume_job:
             identity=args.resume_job
         else:
@@ -73,7 +78,8 @@ def main():
                 result.raise_for_status();identity=result.json()['id']
         folder=ROOT/'data/jobs'/identity
         output=folder/'acceptance';output.mkdir(exist_ok=True)
-        report={'job_id':identity,'source_job':args.source_job,'input_files':[p.name for p in pdfs],
+        report=json.loads((output/'run.json').read_text(encoding='utf-8')) if args.resume_job and (output/'run.json').is_file() else {
+                'job_id':identity,'source_job':args.source_job,'input_files':[p.name for p in pdfs],
                 'started_at':datetime.now(timezone.utc).isoformat(),'reference_sent_to_api':False,
                 'git_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
                 'input_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pdfs}}
@@ -99,7 +105,9 @@ def main():
         begin=next((e for e in scoped if e['event']=='STAGE_STARTED'),None)
         end=next((e for e in reversed(scoped) if e['event'] in ('STAGE_AWAITING_REVIEW','EXPORT_COMPLETED')),None)
         if begin and end:durations[str(stage)]=(datetime.fromisoformat(end['at'])-datetime.fromisoformat(begin['at'])).total_seconds()
-    report.update(state='completed',elapsed_seconds=round(time.monotonic()-started,3),stage_seconds=durations,
+    beginning=next(e for e in events if e['event']=='STAGE_STARTED')
+    ending=next(e for e in reversed(events) if e['event']=='EXPORT_COMPLETED')
+    report.update(state='completed',elapsed_seconds=(datetime.fromisoformat(ending['at'])-datetime.fromisoformat(beginning['at'])).total_seconds(),stage_seconds=durations,
                   requests_by_stage=dict(Counter(str(e['stage']) for e in events if e['event']=='MODEL_REQUEST_STARTED')),
                   baseline=str(args.baseline.resolve()),baseline_sha256=hashlib.sha256(args.baseline.read_bytes()).hexdigest(),
                   judge_sha256=hashlib.sha256(JUDGE.read_bytes()).hexdigest(),

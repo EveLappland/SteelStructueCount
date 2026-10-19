@@ -17,7 +17,7 @@ const context={node,LedgerTools:tools,jobId:'test-job',activeView:null,
     splitRefs:value=>value.split(',').filter(Boolean),document:{createTextNode:text=>node('text',text)}};
 vm.createContext(context);
 function load(name){const start=source.indexOf('function '+name+'(');const end=source.indexOf('\n}',start)+2;vm.runInContext(source.slice(start,end),context);}
-load('renderConstructionCatalog');load('renderInventory');
+load('renderConstructionCatalog');
 const target=node('section'),panel=node('section');
 const data={catalog_mode:'ai_pages',profile_catalog:['HEA260'],catalog_summary:{plan_names:['Deck-Q'],elevation_names:[],plane_name_count:2},
     page_decisions:[{file:'notes.pdf',page:1,decision:'SKIP',reason:'Only connection details',issue:''}],

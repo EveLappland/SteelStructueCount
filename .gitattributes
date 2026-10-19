@@ -5,3 +5,4 @@
 *.css text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+tools/judge.py -text

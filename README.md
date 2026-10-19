@@ -72,4 +72,5 @@ node --test tests/*.cjs
 .\.venv\Scripts\python.exe tools/judge.py --baseline "<MTO基准.xlsx>" --candidate "<steel_takeoff.xlsx>" --csv diff.csv
 ```
 
-评分返回 1 表示存在差异，不表示程序崩溃。可选独立工具：`render_sample_views.py` 渲染、`benchmark_view_concurrency.py` 并发、`test_group_dedup.py` / `test_group_reconciliation.py` 分组诊断、`experiment_label_colors.py` 着色对比、`score_reference.py` 完整所属面的 JSON 参考核验。
+评分返回 1 表示存在差异，不表示程序崩溃。可选独立工具：`render_views.py` 渲染、`benchmark_view_concurrency.py` 并发、`test_group_dedup.py` / `test_group_reconciliation.py` 分组诊断、`experiment_label_colors.py` 着色对比、`score_reference.py` 完整所属面的 JSON 参考核验。
+
