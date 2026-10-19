@@ -68,7 +68,7 @@ L120*12 输出数量与 MTO 都是 64，但仅 24 根长度匹配；HEA450、HEA
 - 逐根差异：`data/jobs/4244ac7a6d1048488540e03510bb3196/acceptance/diff.csv`。
 - 规格明细：`data/jobs/4244ac7a6d1048488540e03510bb3196/acceptance/score.json`。
 - 文件指纹、请求数、耗时和旧任务对照：`data/jobs/4244ac7a6d1048488540e03510bb3196/acceptance/run.json`。
-- `docs/refactor-audit.md` 记录逐阶段清理依据、保留项及测试。后端 105 项、前端 5 项通过；真实渲染 CLI、旧结果本地分配等价性及实际网页已检查。
+- `docs/refactor-audit.md` 记录逐阶段清理依据、保留项及测试。后端 106 项、前端 5 项通过；真实渲染 CLI、旧结果本地分配等价性及实际网页已检查。
 
 ```powershell
 python tools/run_full_test.py --source-job 2f039bffcc9641e7b289646ff15fb952 --baseline "<MTO基准.xlsx>"

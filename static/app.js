@@ -5,7 +5,7 @@ const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等�
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, matchSource=null;
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
-function showError(error) { $('#error').hidden=false; $('#error').textContent=error.message||String(error); }
+function showError(error) { console.error(error);$('#error').hidden=false; $('#error').textContent=error.message||String(error); }
 async function api(path,method='GET',body=null) { const opts={method}; if(body) { opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body); } const r=await fetch(path,opts);let data;try{data=await r.json();}catch{throw Error('服务器返回了无法解析的响应。');}if(!r.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));return data; }
 function settings() { const raw=$('#max-concurrency').value.trim();const parallel=Number(raw);if(raw&&(!Number.isInteger(parallel)||parallel<1))throw Error('AI请求并发数必须是正整数。');return {base_url:$('#base-url').value,api_key:$('#api-key').value,model:$('#model').value,max_concurrency:raw?String(parallel):'',label_color_mode:$('#label-color-mode').value}; }
 async function refreshTrace() {

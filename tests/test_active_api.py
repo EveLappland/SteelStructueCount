@@ -48,6 +48,12 @@ class ActiveApiTests(unittest.TestCase):
         self.assertEqual(self.client.patch(self.url+'/stages/1',json=body).status_code,200)
         self.assertEqual(self.client.patch(self.url+'/stages/1',json=body).status_code,409)
 
+    def test_home_versions_scripts_and_disables_html_cache(self):
+        response=self.client.get('/')
+        self.assertEqual(response.headers['cache-control'],'no-store')
+        self.assertRegex(response.text,r'/app\.js\?v=[a-f0-9]{12}')
+        self.assertNotIn('id="discovery-inventory"',response.text)
+
     def test_second_stage_cannot_mutate_upstream_views(self):
         two=self.prepare_two();changed=copy.deepcopy(two)
         changed['views'][0]['bbox']=[0,0,.8,1]

@@ -7,12 +7,13 @@ import threading
 import traceback
 import uuid
 import os
+import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -277,6 +278,15 @@ def create_app(root=ROOT, start_workers=True):
     @application.get('/api/jobs/{job_id}/views-download')
     def download_views(job_id:str):
         return output(job_id,'views_archive','application/zip')
+
+    @application.get('/',response_class=HTMLResponse)
+    def index():
+        static=ROOT/'static'
+        html=(static/'index.html').read_text(encoding='utf-8')
+        for name in ('styles.css','ledger.js','group_stage.js','app.js'):
+            version=hashlib.sha256((static/name).read_bytes()).hexdigest()[:12]
+            html=html.replace(f'"/{name}"',f'"/{name}?v={version}"')
+        return HTMLResponse(html,headers={'Cache-Control':'no-store'})
 
     application.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')
     return application
