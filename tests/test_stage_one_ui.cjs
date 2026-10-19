@@ -9,13 +9,14 @@ class Element {
     replaceChildren(...children){this.children=children;}
 }
 const node=(...args)=>new Element(...args);
-const context={node,LedgerTools:tools,jobId:'test-job',activeView:null,
+const context={node,LedgerTools:tools,jobId:'test-job',
     table:(headers,rows)=>node('table',JSON.stringify({headers,rows})),
     select:(label,value,options,onChange)=>Object.assign(node('select',label),{value,options,onChange}),
     input:(label,value,onChange)=>Object.assign(node('input',label),{value,onChange}),
     setField:(object,key,value)=>{object[key]=value;},mark:()=>{},showError:error=>{throw error;},
     splitRefs:value=>value.split(',').filter(Boolean),document:{createTextNode:text=>node('text',text)}};
 vm.createContext(context);
+vm.runInContext(source.match(/^let activeView.*$/m)[0],context);
 function load(name){const start=source.indexOf('function '+name+'(');const end=source.indexOf('\n}',start)+2;vm.runInContext(source.slice(start,end),context);}
 load('renderConstructionCatalog');
 const target=node('section'),panel=node('section');

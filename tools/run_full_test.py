@@ -98,7 +98,11 @@ def main():
                 raise RuntimeError('完整流程未完成，保留任务 '+identity+'：'+str(job.get('error_detail')))
             if time.monotonic()-started>3600:raise TimeoutError('任务仍在运行，使用 --resume-job 继续监控')
             time.sleep(5)
-        events=get('/api/jobs/'+identity+'/logs?limit=1000')['items']
+        events=[];cursor=0
+        while True:
+            page=get(f'/api/jobs/{identity}/logs?after={cursor}&limit=1000')
+            events.extend(page['items']);cursor=page['next_cursor']
+            if cursor>=page['total']:break
     durations={}
     for stage in range(1,5):
         scoped=[e for e in events if e['stage']==stage]

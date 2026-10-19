@@ -3,7 +3,7 @@ const $ = selector => document.querySelector(selector);
 const stageNames = {1:'视图、轴线与高清裁切',2:'图片识别钢材台账',3:'跨视图匹配与单根统计'};
 const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
-let matchSource=null;
+let activeView=null, matchSource=null;
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
 function showError(error) { $('#error').hidden=false; $('#error').textContent=error.message||String(error); }
 async function api(path,method='GET',body=null) { const opts={method}; if(body) { opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body); } const r=await fetch(path,opts);let data;try{data=await r.json();}catch{throw Error('服务器返回了无法解析的响应。');}if(!r.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));return data; }
