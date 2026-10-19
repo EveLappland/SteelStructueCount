@@ -17,7 +17,6 @@ def axis_name(text):
 
 
 def build_axis_catalog(pages,views):
-    native={t['id']:t for page in pages for t in page['texts']}
     axes={};per_view={v['id']:[] for v in views if v['kind']!='ISOMETRIC'}
     def add(name,view_ids=(),evidence=None,uploaded=None,kind=None):
         if not name:return
@@ -37,12 +36,6 @@ def build_axis_catalog(pages,views):
             for name in view.get('axis_labels',[]):add(name,[view['id']],{'kind':'CONFIRMED_VIEW_REFERENCE' if view.get('axes_reviewed') else 'AI_VIEW_CATALOG'})
             if view.get('axes_reviewed'):
                 continue
-        for mark in view.get('axis_marks',[]):
-            if mark.get('direction') not in ('X','Y','Z'):continue
-            if mark.get('direction')=='Z' and not axis_name(mark['label']):continue
-            references=[native[e] for e in mark.get('evidence_ids',[]) if e in native]
-            if references and not any(inside(t,view['bbox']) for t in references):continue
-            add(mark['label'],[view['id']],{'kind':'VIEW_AXIS_MARK','evidence_ids':mark.get('evidence_ids',[])})
     for page in pages:
         local=[v for v in views if v.get('page_id')==page['id'] and v['kind']!='ISOMETRIC' and v.get('region_confirmed',True)]
         for text in page['texts']:

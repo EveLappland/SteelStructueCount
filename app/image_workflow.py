@@ -13,10 +13,10 @@ from .axis_catalog import build_axis_catalog
 from .domain import StageTwo
 from .drawing_input import render_png,write_view_image
 from .label_colors import COLORIZER_VERSION,colorize_view
-from .llm_runner import _api_settings
+from .settings import _api_settings
 from .member_recognition import make_input,recognition_prompt,ImageMemberResponse,validate_rows,validate_ledger,allowed_model_tags
 from .native_pdf import write_json
-from .stage_two_iteration import assess_rows
+from .coverage import assess_rows
 from .ai_concurrency import view_concurrency
 from .view_filter import role
 
@@ -88,7 +88,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     one={**one,'axis_catalog':build_axis_catalog(list(pages.values()),one['views'])}
     entries={e['id']:e for e in json.loads((directory/'pdf_manifest.json').read_text(encoding='utf-8'))}
     folder=directory/'responses'/f'attempt-images-{uuid.uuid4().hex}'
-    result=StageTwo(**{**one,'analysis_pending':False},recognition_mode='view_ledger').model_dump()
+    result=StageTwo(**one,recognition_mode='view_ledger').model_dump()
     result['warnings']=[]
     page_warnings=[w for w in one.get('warnings',[]) if w.startswith('页面待确认：')]
     identities=[v['id'] for v in one['views']]
@@ -171,11 +171,11 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                    'detail_paths':[str(directory/'views'/Path(name).name) for name in item['selected_details']],
                    'allowed_view_tags':allowed_model_tags(bundle)}
             prompt=recognition_prompt(bundle)
-            response_file=f"{view['id']}_members_round1.json"
+            response_file=f"{view['id']}_members.json"
             try:
                 payload=model_call(client,model,prompt,entry,folder/response_file,ImageMemberResponse,
                     reuse_saved=reuse_saved,emit=emit,audit=audit,
-                    reasoning_effort=settings.get('reasoning_effort','high'),auto_retry=False)
+                    reasoning_effort=settings.get('reasoning_effort','high'))
                 rows=validate_rows(payload['members'],view,one)
                 source_tag=bundle['current_view_tag']
                 audit.event('SOURCE_VIEW_TAG_ENRICHMENT',view_id=view['id'],source_tag=source_tag,
@@ -184,24 +184,15 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                 assessment=assess_rows(rows,pages[view['page_id']],view)
             except Exception as exc:
                 reason=audit.scrub(str(exc))
-                write_json(folder/f"{view['id']}_rounds.json",
-                           {'view_id':view['id'],'rounds':[{'round':1,'status':'failed','error':reason}],
-                            'selected_round':None})
-                audit.event('VIEW_RECOGNITION_ROUND_FAILED',view_id=view['id'],round=1,error=reason)
+                write_json(folder/f"{view['id']}_checks.json",{'view_id':view['id'],'status':'failed','error':reason})
                 raise
-            write_json(folder/f"{view['id']}_rounds.json",
-                       {'view_id':view['id'],'rounds':[{'round':1,'status':'valid',
-                        'score':len(assessment['feedback']),'assessment':assessment,
-                        'response_file':response_file}], 'selected_round':1,
-                        'selection_reason':'每个视图仅识图一次；本地校验问题保留供核对，不触发模型迭代。'})
-            audit.event('VIEW_RECOGNITION_ROUND',view_id=view['id'],round=1,
-                        score=len(assessment['feedback']),feedback=assessment['feedback'],selected=True)
+            write_json(folder/f"{view['id']}_checks.json",{'view_id':view['id'],'assessment':assessment,'response_file':response_file})
             count=assessment['member_cnt'];native_count=assessment['label_count']
             coverage=assessment['coverage_differences']
             outcome={'rows':rows,'warnings':[], 'status':{'view_id':view['id'],
                 'status':'completed' if rows else 'empty','member_cnt':count,
                 'label_count':native_count,'coverage_differences':coverage,
-                'rounds_attempted':1,'selected_round':1,
+                'model_calls':1,
                 'remaining_checks':assessment['feedback']}}
             audit.event('LOCAL_PROFILE_COVERAGE_CHECK',view_id=view['id'],differences=coverage,
                         reason='只在本地比较各规格标签数与member_cnt合计；不强制补齐或删除。')

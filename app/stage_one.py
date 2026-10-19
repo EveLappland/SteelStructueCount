@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import Field,model_validator
 from .domain import Contract,StageOne,View
 from .axis_catalog import build_axis_catalog
-from .geometry import section
+from .profiles import section
 from .member_recognition import normalize_view_tag,normalize_view_tags
 from .native_pdf import write_json
 
@@ -106,14 +106,14 @@ def refresh_catalog(data,pages):
 def prepare(directory,settings,emit,audit,*,reuse_saved=False):
     from .pipeline import extract,model_call,OpenAI
     from .image_workflow import freeze_images
-    from .llm_runner import _api_settings
+    from .settings import _api_settings
     from .drawing_input import render_data_uri
     from .ai_concurrency import view_concurrency
     limit=view_concurrency(settings)
     entries,pages=extract(directory,emit,audit,render_previews=False)
     base,key,model=_api_settings(settings)
     folder=directory/'responses'/f'attempt-pages-{uuid.uuid4().hex}'
-    result=StageOne(workflow='image_first',catalog_mode='ai_pages',views=[],analysis_pending=True).model_dump()
+    result=StageOne(views=[]).model_dump()
     records={};adopted={};finished=set();pending={};next_page=0
     started=time.monotonic();workers=min(limit,len(pages))
     audit.event('PAGE_BATCH_STARTED',configured_concurrency=limit,workers=workers,pages=len(pages))

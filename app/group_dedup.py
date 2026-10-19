@@ -4,7 +4,7 @@ import hashlib
 import json
 from itertools import combinations
 
-from .geometry import section
+from .profiles import section
 from .member_recognition import RecognizedMember,normalize_view_tags,view_tag
 from .view_filter import role
 

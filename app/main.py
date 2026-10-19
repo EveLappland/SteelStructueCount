@@ -18,11 +18,8 @@ from pydantic import ValidationError
 
 from .domain import StageAction, StageEdit
 from .pipeline import execute, pending_reasons, validate_draft, render_draft, load_native
-from .native_pdf import inside
 from .store import JobStore, StoreError
 from .audit import AuditLog
-from .discovery_inventory import build_inventory
-from .axis_catalog import build_axis_catalog
 from .member_recognition import normalize_view_tags
 from .ai_concurrency import view_concurrency
 
@@ -98,7 +95,7 @@ def create_app(root=ROOT, start_workers=True):
 
     @application.post('/api/jobs')
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
-                   api_key:str=Form(''),model:str=Form(''),include_lengths:bool=Form(True),
+                   api_key:str=Form(''),model:str=Form(''),
                    max_concurrency:int|None=Form(None,ge=1),auto_run:bool=Form(True),
                    label_color_mode:str=Form('original')):
         if label_color_mode not in ('original','colored'):
@@ -145,17 +142,6 @@ def create_app(root=ROOT, start_workers=True):
     @application.get('/api/jobs/{job_id}/stages/{stage}')
     def get_stage(job_id:str,stage:int):
         result=store.stage(job_id,stage)
-        if stage in (1,2) and 'views' in result['data'] and result['data'].get('catalog_mode')!='ai_pages':
-            # Enrich existing v2 tasks without rewriting their approved history.
-            inventory=build_inventory(result['data'],load_native(directory(job_id)))
-            result['data']['discovery_inventory']=inventory
-            result['data']['profile_catalog']=[p['profile'] for p in inventory['profiles']]
-            if stage==2 or result['data'].get('workflow')=='image_first':
-                result['data']['axis_catalog']=build_axis_catalog(load_native(directory(job_id)),result['data']['views'])
-                if stage==1:
-                    for view in result['data']['views']:
-                        if not view.get('axes_reviewed'):
-                            view['axis_labels']=result['data']['axis_catalog']['per_view'].get(view['id'],[])
         result['snapshots']=[s for s in store.snapshots(job_id) if s['stage']==stage]
         if stage==2 and result['data'].get('recognition_mode')=='view_ledger':
             for row in result['data'].get('view_members',[]):
@@ -183,8 +169,6 @@ def create_app(root=ROOT, start_workers=True):
         store.edit(job_id,stage,body.revision,data,body.reason)
         AuditLog(folder,stage).event('DRAFT_EDITED',revision=body.revision+1,reason=body.reason,
                                     downstream_invalidated=True)
-        if stage<=2 and data.get('workflow')!='image_first':
-            render_draft(folder,data)
         return store.stage(job_id,stage)
 
     @application.post('/api/jobs/{job_id}/stages/{stage}/approve')
@@ -245,22 +229,6 @@ def create_app(root=ROOT, start_workers=True):
     def pages(job_id:str):
         return [{k:p[k] for k in ('id','file','page','width_pt','height_pt','titles')} |
                 {'url':f"/api/jobs/{job_id}/views/{p['id']}.jpg"} for p in native_index(job_id)]
-
-    @application.get('/api/jobs/{job_id}/evidence')
-    def evidence(job_id:str,page_id:str,view_id:str='',q:str='',limit:int=Query(200,ge=1,le=1000)):
-        if not any(p['id']==page_id for p in native_index(job_id)):
-            raise HTTPException(404,'未找到 PDF 页。')
-        native=json.loads((directory(job_id)/'native'/f'{page_id}.json').read_text(encoding='utf-8'))
-        bbox=[0,0,1,1]
-        if view_id:
-            draft=store.stage(job_id,2 if store.get(job_id)['active_stage']>=2 else 1)['data']
-            view=next((v for v in draft.get('views',[]) if v['id']==view_id and v['page_id']==page_id),None)
-            if not view:
-                raise HTTPException(404,'未找到视图。')
-            bbox=view['bbox']
-        rows=[item for item in native['texts']+native['vectors'] if inside(item,bbox)
-              and (not q or q.lower() in (item['text']+' '+item['id']).lower())]
-        return {'total':len(rows),'items':rows[:limit]}
 
     @application.get('/api/jobs/{job_id}/views/{filename}')
     def view_image(job_id:str,filename:str):

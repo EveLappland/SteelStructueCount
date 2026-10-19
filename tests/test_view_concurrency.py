@@ -120,7 +120,7 @@ class ViewConcurrencyTests(unittest.TestCase):
             return self.payload(entry)
         result=self.run_views(model)
         self.assertEqual(sorted(calls),['view-0','view-1','view-2'])
-        self.assertTrue(all(a['rounds_attempted']==1 and a['selected_round']==1
+        self.assertTrue(all(a['model_calls']==1
                             for a in result['view_analysis']))
 
     def test_duplicate_view_ids_fail_before_any_api_call(self):

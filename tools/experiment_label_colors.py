@@ -17,12 +17,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from app.image_workflow import freeze_images
-from app.llm_runner import _api_settings
+from app.settings import _api_settings
 from app.member_recognition import (ImageMemberResponse, allowed_model_tags,
     make_input, recognition_prompt, validate_rows)
 from app.native_pdf import write_json
 from app.pipeline import load_native, model_call
-from app.stage_two_iteration import assess_rows
+from app.coverage import assess_rows
 from app.store import JobStore
 
 
@@ -77,7 +77,7 @@ def main():
             started=time.monotonic()
             with OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1) as client:
                 payload=model_call(client,model,recognition_prompt(bundle),entry,response_path,
-                    ImageMemberResponse,reasoning_effort='high',auto_retry=False)
+                    ImageMemberResponse,reasoning_effort='high')
             rows=validate_rows(payload['members'],view,source)
             assessment=assess_rows(rows,pages[view['page_id']],view)
             raw=json.loads(response_path.read_text(encoding='utf-8'))

@@ -1,5 +1,5 @@
 import unittest
-from app.discovery_inventory import build_inventory, labels
+from app.discovery_inventory import labels
 
 
 class DiscoveryInventoryTest(unittest.TestCase):
@@ -11,20 +11,3 @@ class DiscoveryInventoryTest(unittest.TestCase):
                          [('L80*8',2),('L100*75*8',1),('SHS100*100*6',1)])
         self.assertEqual(list(labels('2F-L120*12 2F- L80×8')),
                          [('L120*12',2),('L80*8',2)])
-
-    def test_catalog_survives_missing_members_and_view_region(self):
-        texts=[{'id':'p:t1','text':'HEA260 /EPB','bbox':[.1,.1,.2,.2]},
-               {'id':'p:t2','text':'HEA260 /EMH 2LF- L120*12','bbox':[.3,.3,.4,.4]}]
-        title={'title':'PLAN AT EL.107.500(TOS)','kind':'PLAN','elevation_m':107.5,
-               'elevation_basis':'TOS','alignment':None,'evidence_id':'p:title'}
-        pages=[{'id':'p','file':'drawing.pdf','page':1,'texts':texts,'titles':[title]}]
-        result=build_inventory({'views':[],'observations':[]},pages)
-        self.assertEqual(result['profile_count'],2)
-        self.assertEqual(result['view_counts'],{'PLAN':1,'ELEVATION':0,'ISOMETRIC':0})
-        self.assertFalse(result['views']['PLAN'][0]['region_identified'])
-        self.assertEqual(result['profiles'][0]['profile'],'HEA260')
-        self.assertEqual(len(result['profiles'][0]['evidence']),2)
-        result=build_inventory({'views':[],'observations':[{'profile':'HEA999'}]},pages)
-        self.assertEqual(result['profile_count'],2)
-        self.assertEqual(result['unverified_profiles'],['HEA999'])
-

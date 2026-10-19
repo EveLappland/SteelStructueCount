@@ -33,7 +33,7 @@ def main():
     report['source']={'job_id':args.job_id,'stage':2,'revision':before[0],'status':before[1],
                       'data_sha256':hashlib.sha256(before[2].encode()).hexdigest(),'api_calls':0,
                       'code_sha256':{name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
-                                     for name in ('app/group_dedup.py','app/member_recognition.py','app/geometry.py','tools/test_group_dedup.py')}}
+                                     for name in ('app/group_dedup.py','app/member_recognition.py','app/profiles.py','tools/test_group_dedup.py')}}
     (output/'stage_two_snapshot.json').write_text(before[2],encoding='utf-8')
     after=read_stage(args.job_id)
     report['source_unchanged']=before==after

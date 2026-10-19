@@ -33,7 +33,7 @@ assert.ok(!all.filter(e=>e.tag==='img').some(e=>(e.src||'').includes('notes.pdf'
 assert.ok(!all.some(e=>e.textContent.includes('X/Y/Z')));
 const name=all.find(e=>e.tag==='input'&&e.textContent==='平面/立面名称');
 name.onChange('Other deck');assert.equal(data.views[0].plane_name,'Other deck');
-context.draft={data};context.renderInventory(); // Does not invoke old native-regex catalog UI.
+assert.equal(context.renderInventory,undefined); // Removed old native-regex catalog UI.
 const empty=node('section');context.renderConstructionCatalog({...data,views:[]},empty,node('section'));
 assert.equal(walk(empty).filter(e=>e.tag==='img').length,0);
 console.log('Stage one page decisions, AI catalog, editable names and screenshot scope passed.');

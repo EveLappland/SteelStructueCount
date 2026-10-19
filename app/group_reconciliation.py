@@ -10,7 +10,7 @@ import json
 from pydantic import Field, StrictInt, field_validator
 
 from .domain import Contract
-from .geometry import section
+from .profiles import section
 from .group_dedup import build_group_review, expand_confirmed_groups
 from .member_recognition import normalize_view_tags, view_tag
 

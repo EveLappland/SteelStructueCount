@@ -33,7 +33,7 @@ class StageOneTests(unittest.TestCase):
     def tearDown(self):self.tmp.cleanup()
 
     def run_prepare(self,call,concurrency=1,**options):
-        with patch('app.pipeline.OpenAI'),patch('app.llm_runner._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=call):
+        with patch('app.pipeline.OpenAI'),patch('app.settings._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=call):
             return prepare(self.root,{'max_concurrency':str(concurrency)},lambda _:None,self.audit,**options)
 
     def test_parallel_requests_out_of_order_with_serial_rendering_and_stable_checkpoint(self):
@@ -56,7 +56,7 @@ class StageOneTests(unittest.TestCase):
             return catalog()
         with patch('app.drawing_input.render_data_uri',side_effect=render),patch('app.pipeline.OpenAI',side_effect=lambda **kw:Mock()):
             # run_prepare normally patches the constructor; call prepare directly here.
-            with patch('app.llm_runner._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=ai):
+            with patch('app.settings._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=ai):
                 result=prepare(self.root,{'max_concurrency':'2'},lambda _:None,self.audit,reuse_saved=True)
         self.assertEqual(len({id(c) for c in clients}),4)
         for client in clients:client.close.assert_called_once()
@@ -127,7 +127,7 @@ class StageOneTests(unittest.TestCase):
         self.assertEqual(result['catalog_summary']['plan_names'],['DECK-Q'])
         self.assertEqual(result['catalog_summary']['plane_name_count'],3)
         self.assertEqual(view_tag(result['views'][0]),'DECK-Q')
-        self.assertEqual(result['views'][0]['visible_axes'],[])
+        self.assertNotIn('visible_axes',result['views'][0])
         self.assertFalse((self.root/'views/f000-p001.jpg').exists())
         self.assertFalse(list((self.root/'views').glob('*f000-p001*')))
         self.assertTrue((self.root/'views'/result['views'][0]['image_file']).is_file())
@@ -192,7 +192,7 @@ class StageOneTests(unittest.TestCase):
             def ai(client,model,prompt,entry,path,contract,**kwargs):
                 if contract is PageAssessment:return {'decision':'SKIP' if entry['page']==1 else 'CONSTRUCTION','reason':'用途说明'}
                 return catalog()
-            with patch('app.pipeline.OpenAI'),patch('app.llm_runner._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=ai):
+            with patch('app.pipeline.OpenAI'),patch('app.settings._api_settings',return_value=('https://example.test','k','m')),patch('app.pipeline.model_call',side_effect=ai):
                 data=prepare(folder,{},lambda _:None,AuditLog(folder,1))
             store.complete_stage(identity,1,data)
             result=client.get(f'/api/jobs/{identity}/stages/1').json()['data']

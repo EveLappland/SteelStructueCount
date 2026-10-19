@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 from pydantic import Field, StrictInt, field_validator
 from .domain import Contract
-from .geometry import section
+from .profiles import section
 from .axis_catalog import build_axis_catalog,axis_name
 from .native_pdf import view_context
 

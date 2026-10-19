@@ -17,7 +17,7 @@ class AutomaticWorkflowTests(unittest.TestCase):
             data={'auto_run':str(not manual).lower(),'api_key':'test-key','model':'test','base_url':'https://example.test'}).json()['id']
         two=fixture([row('p1','p'),row('a1','a')])
         two.update(workflow='image_first',recognition_mode='view_ledger',candidates=[],warnings=[])
-        one={'workflow':'image_first','views':two['views'],'warnings':[]}
+        one={'catalog_mode':'ai_pages','workflow':'image_first','views':two['views'],'warnings':[],'page_decisions':[]}
         proposal=proposal or {'resolutions':[resolution()], 'exclusions':[],'notes':[]}
         with patch('app.image_workflow.prepare_catalog',return_value=one),patch('app.image_workflow.recognize_views',return_value=two),patch('app.pipeline.load_native',return_value=[]),patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',return_value=proposal) as calls:
             app.state.worker(identity,1)
@@ -28,7 +28,7 @@ class AutomaticWorkflowTests(unittest.TestCase):
         job=client.get(f'/api/jobs/{identity}').json()
         self.assertTrue(job['auto_run']);self.assertEqual(job['state'],'completed')
         self.assertEqual(job['total'],3);self.assertEqual(calls.call_count,1)
-        self.assertEqual(calls.call_args.kwargs['reasoning_effort'],'max')
+        self.assertEqual(calls.call_args.kwargs['reasoning_effort'],'high')
         three=app.state.store.stage(identity,3)['data']
         self.assertTrue(three['review']['ai_proposal']['applied'])
         self.assertEqual(three['totals']['allocated_observation_units'],6)
@@ -57,4 +57,3 @@ class AutomaticWorkflowTests(unittest.TestCase):
         self.assertEqual(calls.call_count,3)
         self.assertIsNone(job['download_url'])
         self.assertIn('仍有具备长度',job['error_detail'])
-
