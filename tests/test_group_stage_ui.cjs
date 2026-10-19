@@ -21,7 +21,7 @@ const context={
         groups:[{id:'candidate',spec:'HEA240',length_mm:8000,view_tags:['EL.20.000(TOS)','FRAME/A'],agreed_member_cnt:3,review_reasons:[],sources:[
             {view_id:'p',title:'plan',member_cnt:3,row_ids:['r1']},{view_id:'a',title:'elevation',member_cnt:3,row_ids:['r2']}]}],
         ai_proposal:{validation:{valid:true},proposal:{resolutions:[resolution],exclusions:[],notes:[]}}}}},
-    $:()=>target,node:(...args)=>new Element(...args),
+    $:selector=>selector==='#retry-effort'?{value:'high'}:target,node:(...args)=>new Element(...args),
     table:(headers,rows)=>{const e=new Element('table');e.append(...rows.flat());return e;},
     button:(label,fn)=>Object.assign(new Element('button',label),{onclick:fn}),
     input:(label,value,fn)=>Object.assign(new Element('input',label),{value,change:fn}),
@@ -45,9 +45,10 @@ find('载入AI提案到可编辑草稿').onclick();
 assert.equal(context.draft.data.resolutions[0].id,'ai-result');
 assert.notEqual(context.draft.data.resolutions[0],resolution);
 (async()=>{
-    await find('AI重新核验并自动导出（max）').onclick();assert.equal(calls.length,0);
-    context.dirty=false;await find('AI重新核验并自动导出（max）').onclick();
+    await find('AI重新核验并自动导出').onclick();assert.equal(calls.length,0);
+    context.dirty=false;await find('AI重新核验并自动导出').onclick();
     assert.equal(calls[0][2].settings.review_mode,'ai');assert.equal(calls[0][2].reuse_saved,false);
     assert.equal(calls[0][2].auto_run,true);
+    assert.equal(calls[0][2].settings.reasoning_effort,'high');
     assert.ok(changes>0);console.log('Group review controls, frozen images and proposal overwrite protection passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

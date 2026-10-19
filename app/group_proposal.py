@@ -1,5 +1,7 @@
 """Text-only reconciliation proposals, isolated from independent references."""
 import json
+import hashlib
+import re
 import uuid
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from .domain import Contract
 from .group_reconciliation import Resolution,Exclusion,reconcile,source_hash
 from .llm_runner import _api_settings
 from .member_recognition import view_tag
+from .geometry import section
 from .native_pdf import write_json
 
 
@@ -16,6 +19,38 @@ class GroupProposal(Contract):
     resolutions: list[Resolution] = Field(default_factory=list)
     exclusions: list[Exclusion] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+def normalize_proposal_ids(payload, audit=None):
+    """Repair descriptive group IDs only; never change observation references."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('resolutions'), list):
+        return
+    seen = set()
+    for row in payload['resolutions']:
+        if not isinstance(row, dict):
+            continue
+        original = row.get('id')
+        if not isinstance(original, str) or not original.strip():
+            continue  # Required/type checks still belong to the contract.
+        canonical = original if re.fullmatch(r'[A-Za-z0-9_-]{1,120}', original) else (
+            'group-' + hashlib.sha256(original.encode('utf-8')).hexdigest())
+        if canonical in seen:
+            raise ValueError('结果组ID不可重复（包括规范化后的编号）')
+        seen.add(canonical)
+        if canonical != original:
+            row['id'] = canonical
+            if audit:
+                audit.event('GROUP_ID_NORMALIZED', model_id=original, canonical_id=canonical,
+                            reason='仅规范化结果组编号；来源观察、数量、规格、长度和标签保持原响应值。')
+
+
+def unallocated_usable_rows(two, result):
+    """Catalog-unknown observations can remain pending, not forced into a false group."""
+    invalid = {r['row_id'] for r in result['review']['invalid_rows']}
+    profiles = {section(p)[0] for p in two['profile_catalog']}
+    usable = {r['id'] for r in two['view_members'] if r['id'] not in invalid
+              and r.get('length_mm') and r.get('view_tags') and section(r['spec'])[0] in profiles}
+    return [e for e in result['exceptions'] if e['observation_id'] in usable and e.get('member_cnt')]
 
 
 def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
@@ -47,10 +82,7 @@ def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
                 result=reconcile(two,draft)
                 # No local invention of groups. Ask the model to account for
                 # every usable row, rather than silently exporting an empty ledger.
-                invalid={r['row_id'] for r in result['review']['invalid_rows']}
-                remaining=[e for e in result['exceptions'] if e['observation_id'] not in invalid and e.get('member_cnt') and any(
-                    r['id']==e['observation_id'] and r.get('length_mm') and r.get('view_tags')
-                    for r in two['view_members'])]
+                remaining=unallocated_usable_rows(two,result)
                 if remaining:raise ValueError('仍有具备长度的观察未分配：'+json.dumps(remaining,ensure_ascii=False))
                 validation={'valid':True,'totals':result['totals']};break
             except ValueError as error:
@@ -58,7 +90,7 @@ def propose_groups(two,directory,settings,emit,audit,*,reuse_saved=False):
                 audit.event('GROUP_PROPOSAL_REJECTED',attempt=attempt,error=str(error))
                 if attempt<2:
                     emit(f'AI分组本地检查未通过，正在请求修正（{attempt+1}/2）。')
-                    prompt=guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':'))+'\n上次提案：\n'+json.dumps(proposal,ensure_ascii=False)+'\n本地检查错误：\n'+str(error)+'\n修正并返回完整结果，不只返回差异。'
+                    prompt=guidance+'\n输入台账：\n'+json.dumps(bundle,ensure_ascii=False,separators=(',',':'))+'\n上次提案：\n'+json.dumps(proposal,ensure_ascii=False)+'\n本地检查错误：\n'+str(error)+'\n目录外规格的观察可以不分配、保留待确认；不得仅为通过校验换规格或排除。其余具备长度和目录内规格的观察仍须完整分配。修正并返回完整结果，不只返回差异。'
     finally:client.close()
     write_json(folder/'validation.json',validation)
     if result is not None:write_json(folder/'validated_proposal.json',result)

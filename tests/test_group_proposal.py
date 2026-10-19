@@ -17,7 +17,7 @@ class ProposalTests(unittest.TestCase):
             self.assertTrue(result['validation']['valid'])
             self.assertEqual(result['data']['totals']['confirmed_single_members'],3)
             self.assertTrue(call.call_args.args[3]['text_only'])
-            self.assertEqual(call.call_args.kwargs['reasoning_effort'],'max')
+            self.assertEqual(call.call_args.kwargs['reasoning_effort'],'high')
             self.assertNotIn('DO_NOT_SEND_REFERENCE',call.call_args.args[2])
             self.assertEqual(two,original)
             self.assertTrue((Path(result['folder'])/'validated_proposal.json').is_file())

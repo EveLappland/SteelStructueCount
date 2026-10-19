@@ -141,6 +141,9 @@ def parse_model_content(content, contract, entry, audit=None):
             if isinstance(observation,dict):
                 observation['id']=f"{entry['id']}-o{index:03d}"
                 observation['view_id']=entry['id']
+    from .group_proposal import GroupProposal, normalize_proposal_ids
+    if contract is GroupProposal:
+        normalize_proposal_ids(payload, audit)
     result=contract.model_validate(payload).model_dump()
     if contract in (MemberResponse, ImageMemberResponse) and audit:
         for index,(raw,row) in enumerate(zip(payload['members'],result['members']),1):
