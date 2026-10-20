@@ -1,9 +1,5 @@
 """Refresh native-label coverage after edits without changing recognition status."""
-from collections import Counter
-
-from .discovery_inventory import labels
-from .geometry import section
-from .native_pdf import inside
+from .coverage import assess_rows
 
 
 def refresh_coverage(data,pages):
@@ -12,14 +8,10 @@ def refresh_coverage(data,pages):
     for analysis in data.get('view_analysis',[]):
         if analysis['status'] not in ('completed','empty'):continue
         view=views[analysis['view_id']]
-        native=Counter(profile for text in pages[view['page_id']]['texts'] if inside(text,view['bbox'])
-                       for profile,_ in labels(text['text']))
-        recognized=Counter()
-        for row in data['view_members']:
-            if row['source_view']==view['id']:recognized[section(row['spec'])[0]]+=row['member_cnt']
-        count=sum(recognized.values());native_count=sum(native.values())
-        coverage=[{'spec':spec,'label_count':native[spec],'member_cnt':recognized[spec]}
-                  for spec in sorted(native.keys()|recognized.keys()) if native[spec]!=recognized[spec]]
+        rows=[row for row in data['view_members'] if row['source_view']==view['id']]
+        assessment=assess_rows(rows,pages[view['page_id']],view)
+        count=assessment['member_cnt'];native_count=assessment['label_count']
+        coverage=assessment['coverage_differences']
         analysis.update(member_cnt=count,label_count=native_count,coverage_differences=coverage,
                         status='completed' if count else 'empty')
         prefix=view['title']

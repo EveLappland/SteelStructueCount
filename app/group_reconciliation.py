@@ -1,5 +1,6 @@
 """Audited allocation of view observations to physical member groups.
 
+Each group must keep the exact (spec, view_tags, length) key of every source.
 Each confirmed group consumes a stated quantity from every supporting view.
 No XYZ coordinates or instance correspondence are invented from group counts.
 """
@@ -10,9 +11,9 @@ import json
 from pydantic import Field, StrictInt, field_validator
 
 from .domain import Contract
-from .geometry import section
+from .profiles import section
 from .group_dedup import build_group_review, expand_confirmed_groups
-from .member_recognition import normalize_view_tags, view_tag
+from .member_recognition import normalize_view_tags, view_tag, member_key, key_record
 
 
 def source_hash(data):
@@ -66,6 +67,8 @@ def reconcile(data,draft=None):
     if saved['reconciliation_mode']!='group_ledger':raise ValueError('第三阶段模式不匹配')
     if saved['source_hash']!=digest:raise ValueError('第二阶段内容已改变，请重新生成第三阶段后再核验')
     review=build_group_review(data)
+    if saved['review'].get('deduplication_mode')=='exact_member_key':
+        review.update(deduplication_mode='exact_member_key',notes=saved['review'].get('notes',[]))
     rows={r['id']:r for r in data['view_members']}
     invalid={r['row_id'] for r in review['invalid_rows']}
     views={v['id']:v for v in data['views']}
@@ -91,14 +94,16 @@ def reconcile(data,draft=None):
             row_id=allocation['row_id'];count=allocation['member_cnt']
             if row_id in assigned:raise ValueError('同一结果组内不能重复填写观察行')
             assigned.add(row_id);consume(row_id,count)
+            if member_key(rows[row_id]) != member_key(resolution):
+                raise ValueError(f'{row_id} 的 (spec, view_tags, length) key 与结果组不一致；禁止改写标签、规格或长度后去重')
             by_source[rows[row_id]['source_view']]+=count
         if any(count!=resolution['member_cnt'] for count in by_source.values()):
             raise ValueError('每个来源分配给结果组的数量必须等于该组数量；部分重叠请拆组')
-        # A source must contain this member; conflicting original labels may be
-        # corrected explicitly, with the original row retained in the audit.
+        # Source-plane identity must already be present in stage two, never
+        # invented as a union of incompatible observations during reconciliation.
         if any(view_tag(views[s]) not in resolution['view_tags'] for s in by_source):
             raise ValueError('结果组所属面必须包含每个来源视图的面名称')
-        group={**resolution,'profile':profile,'component_multiplier':multiplier,
+        group={**resolution,'profile':profile,'component_multiplier':multiplier,'member_key':key_record(resolution),
                'confirmed':True,'confirmed_member_cnt':resolution['member_cnt'],
                'source_counts':dict(by_source)}
         groups.append(group)
@@ -139,7 +144,51 @@ def reconcile(data,draft=None):
             'pending_observation_units':sum(e['member_cnt'] or 0 for e in exceptions),
             'confirmed_assemblies':sum(g['member_cnt'] for g in groups),
             'confirmed_single_members':len(members),'confirmed_groups':len(groups),
+            'deduplicated_observation_units':sum(used.values())-sum(e['member_cnt'] for e in exclusions)-sum(g['member_cnt'] for g in groups),
             'pending_source_views':len(review['pending_sources'])}}
+
+
+def reconcile_exact(data):
+    """Deduplicate only exact keys; sum rows within each source before comparing.
+
+    Equal per-source counts describe repeated observations of one group.
+    Unequal counts are retained independently, never guessed or silently dropped.
+    """
+    draft=reconcile(data)
+    rows={r['id']:r for r in data['view_members']}
+    views={v['id']:v for v in data['views']}
+    resolutions=[];notes=[]
+    for group in draft['review']['groups']:
+        if group['length_mm'] is None:
+            continue
+        # Unknown catalog entries remain visible in the pending register.
+        if group['profile'] not in {section(p)[0] for p in data['profile_catalog']}:
+            continue
+        sources=group['sources']
+        for source in sources:
+            for identity in source['row_ids']:
+                row=rows[identity]
+                if view_tag(views[source['view_id']]) not in row['view_tags']:
+                    raise ValueError(f'{identity} 缺少来源所属面，请先重新校验第二阶段')
+                if row.get('member_key') is not None and row['member_key']!=key_record(row):
+                    raise ValueError(f'{identity} 的 key 与第二阶段结构不一致，请重新校验')
+        equal=len({s['member_cnt'] for s in sources})==1
+        batches=[sources] if equal else [[source] for source in sources]
+        if not equal:
+            notes.append(f"{group['id']} 同key各来源数量不同，全部独立保留，未自动扣减。")
+        for index,batch in enumerate(batches,1):
+            count=batch[0]['member_cnt']
+            resolutions.append({'id':f"{group['id']}-{index}",'spec':group['spec'],
+                'view_tags':group['view_tags'],'length_mm':group['length_mm'],'member_cnt':count,
+                'allocations':[{'row_id':identity,'member_cnt':rows[identity]['member_cnt']}
+                               for source in batch for identity in source['row_ids']],
+                'reason':'完整key相同，按来源累计数量一致，重复观察只计一次。' if equal and len(batch)>1
+                         else '保持第二阶段完整key及数量；'+('不同来源数量冲突，独立保留。' if not equal else '无跨视图同key重复。')})
+    draft['resolutions']=resolutions
+    result=reconcile(data,draft)
+    result['review']['deduplication_mode']='exact_member_key'
+    result['review']['notes']=notes
+    return result
 
 
 def export_sheets(two,three):
@@ -162,7 +211,7 @@ def export_sheets(two,three):
          [[e['observation_id'],r.get('source_view'),r.get('spec'),r.get('length_mm'),e['member_cnt'],
            r.get('view_tags'),r.get('location'),e['issues']]
           for e in three['exceptions'] if (r:=rows.get(e['observation_id']))]),
-        ('AI Review Notes',['说明'],[[n] for n in three.get('review',{}).get('ai_proposal',{}).get('proposal',{}).get('notes',[])]),
+        ('Review Notes',['说明'],[[n] for n in three.get('review',{}).get('notes',[]) + three.get('review',{}).get('ai_proposal',{}).get('proposal',{}).get('notes',[])]),
         ('Method Notes',['类型','说明'],[
             ['长度口径','图示参考线名义段长；不包含下料扣减。'],
             ['数量口径','确认组按来源分配；组合钢材只展开一次。待确认项不计入汇总。'],

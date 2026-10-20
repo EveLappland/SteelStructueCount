@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from app.audit import AuditLog
 from app.group_proposal import propose_groups
-from app.llm_runner import _api_settings
+from app.settings import _api_settings
 from app.native_pdf import write_json
 
 

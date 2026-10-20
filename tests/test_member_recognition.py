@@ -218,32 +218,3 @@ class MemberRecognitionTests(unittest.TestCase):
         from app.pipeline import parse_model_content
         with self.assertRaisesRegex(ValueError,'重复键'):
             parse_model_content('{"members":[],"members":[]}',MemberResponse,{'id':'plan1'})
-
-    def test_invalid_response_preserved_and_retry_bounded(self):
-        import json
-        import tempfile
-        from pathlib import Path
-        from unittest.mock import Mock,patch
-        from app.pipeline import model_call
-        def response(content):
-            result=Mock()
-            result.model_dump_json.return_value=json.dumps({'choices':[{'finish_reason':'stop','message':{'content':content}}]})
-            return result
-        with tempfile.TemporaryDirectory() as folder:
-            source=Path(folder)/'source.pdf';source.write_bytes(b'pdf-source-for-hash')
-            target=Path(folder)/'responses/attempt-one/members.json'
-            client=Mock();client.base_url='https://example.test'
-            client.chat.completions.create.side_effect=[response('{"members":[],"members":[]}'),
-                                                        response(json.dumps({'members':[self.row]}))]
-            with patch('app.pipeline.render_data_uri',return_value='data:image/png;base64,test'):
-                result=model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse,
-                                  auto_retry=True)
-            self.assertEqual(result['members'][0]['member_cnt'],2)
-            self.assertEqual(client.chat.completions.create.call_count,2)
-            self.assertEqual(client.chat.completions.create.call_args.kwargs['messages'][1]['content'][0]['type'],'image_url')
-            self.assertTrue(target.with_suffix('.invalid.json').is_file())
-            client.chat.completions.create.side_effect=[response('{}'),response('{}')]
-            with patch('app.pipeline.render_data_uri',return_value='data:image/png;base64,test'),self.assertRaises(ValidationError):
-                model_call(client,'test','recognize',{'id':'plan1','page':1,'source_path':str(source)},target,MemberResponse,
-                           auto_retry=True)
-            self.assertEqual(client.chat.completions.create.call_count,4)

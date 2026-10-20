@@ -17,9 +17,9 @@ class AutomaticWorkflowTests(unittest.TestCase):
             data={'auto_run':str(not manual).lower(),'api_key':'test-key','model':'test','base_url':'https://example.test'}).json()['id']
         two=fixture([row('p1','p'),row('a1','a')])
         two.update(workflow='image_first',recognition_mode='view_ledger',candidates=[],warnings=[])
-        one={'workflow':'image_first','views':two['views'],'warnings':[]}
+        one={'catalog_mode':'ai_pages','workflow':'image_first','views':two['views'],'warnings':[],'page_decisions':[]}
         proposal=proposal or {'resolutions':[resolution()], 'exclusions':[],'notes':[]}
-        with patch('app.image_workflow.prepare_catalog',return_value=one),patch('app.image_workflow.recognize_views',return_value=two),patch('app.pipeline.load_native',return_value=[]),patch('app.pipeline.OpenAI'),patch('app.pipeline.model_call',return_value=proposal) as calls:
+        with patch('app.image_workflow.prepare_catalog',return_value=one),patch('app.image_workflow.recognize_views',return_value=two),patch('app.pipeline.load_native',return_value=[]),patch('app.pipeline.model_call',side_effect=AssertionError('第三阶段不得调用模型改写key')) as calls:
             app.state.worker(identity,1)
         return app,client,identity,calls
 
@@ -27,10 +27,9 @@ class AutomaticWorkflowTests(unittest.TestCase):
         app,client,identity,calls=self.run_job()
         job=client.get(f'/api/jobs/{identity}').json()
         self.assertTrue(job['auto_run']);self.assertEqual(job['state'],'completed')
-        self.assertEqual(job['total'],3);self.assertEqual(calls.call_count,1)
-        self.assertEqual(calls.call_args.kwargs['reasoning_effort'],'max')
+        self.assertEqual(job['total'],3);self.assertEqual(calls.call_count,0)
         three=app.state.store.stage(identity,3)['data']
-        self.assertTrue(three['review']['ai_proposal']['applied'])
+        self.assertEqual(three['review']['deduplication_mode'],'exact_member_key')
         self.assertEqual(three['totals']['allocated_observation_units'],6)
         self.assertEqual(three['totals']['pending_observation_units'],0)
         book=load_workbook(io.BytesIO(client.get(job['download_url']).content))
@@ -50,11 +49,9 @@ class AutomaticWorkflowTests(unittest.TestCase):
         self.assertFalse(calls.called)
         self.assertEqual(len(app.state.store.get(identity)['stages']),1)
 
-    def test_empty_model_result_is_repaired_twice_then_explicit_failure_not_empty_export(self):
+    def test_old_model_proposals_are_not_used_to_rewrite_keys(self):
         app,client,identity,calls=self.run_job(proposal={'resolutions':[],'exclusions':[],'notes':[]})
         job=client.get(f'/api/jobs/{identity}').json()
-        self.assertEqual(job['state'],'failed');self.assertEqual(job['active_stage'],3)
-        self.assertEqual(calls.call_count,3)
-        self.assertIsNone(job['download_url'])
-        self.assertIn('仍有具备长度',job['error_detail'])
-
+        self.assertEqual(job['state'],'completed');self.assertEqual(job['total'],3)
+        self.assertEqual(calls.call_count,0)
+        self.assertIsNotNone(job['download_url'])

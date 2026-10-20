@@ -9,15 +9,16 @@ class Element {
     replaceChildren(...children){this.children=children;}
 }
 const node=(...args)=>new Element(...args);
-const context={node,LedgerTools:tools,jobId:'test-job',activeView:null,
+const context={node,LedgerTools:tools,jobId:'test-job',
     table:(headers,rows)=>node('table',JSON.stringify({headers,rows})),
     select:(label,value,options,onChange)=>Object.assign(node('select',label),{value,options,onChange}),
     input:(label,value,onChange)=>Object.assign(node('input',label),{value,onChange}),
     setField:(object,key,value)=>{object[key]=value;},mark:()=>{},showError:error=>{throw error;},
     splitRefs:value=>value.split(',').filter(Boolean),document:{createTextNode:text=>node('text',text)}};
 vm.createContext(context);
+vm.runInContext(source.match(/^let activeView.*$/m)[0],context);
 function load(name){const start=source.indexOf('function '+name+'(');const end=source.indexOf('\n}',start)+2;vm.runInContext(source.slice(start,end),context);}
-load('renderConstructionCatalog');load('renderInventory');
+load('renderConstructionCatalog');
 const target=node('section'),panel=node('section');
 const data={catalog_mode:'ai_pages',profile_catalog:['HEA260'],catalog_summary:{plan_names:['Deck-Q'],elevation_names:[],plane_name_count:2},
     page_decisions:[{file:'notes.pdf',page:1,decision:'SKIP',reason:'Only connection details',issue:''}],
@@ -33,7 +34,7 @@ assert.ok(!all.filter(e=>e.tag==='img').some(e=>(e.src||'').includes('notes.pdf'
 assert.ok(!all.some(e=>e.textContent.includes('X/Y/Z')));
 const name=all.find(e=>e.tag==='input'&&e.textContent==='平面/立面名称');
 name.onChange('Other deck');assert.equal(data.views[0].plane_name,'Other deck');
-context.draft={data};context.renderInventory(); // Does not invoke old native-regex catalog UI.
+assert.equal(context.renderInventory,undefined); // Removed old native-regex catalog UI.
 const empty=node('section');context.renderConstructionCatalog({...data,views:[]},empty,node('section'));
 assert.equal(walk(empty).filter(e=>e.tag==='img').length,0);
 console.log('Stage one page decisions, AI catalog, editable names and screenshot scope passed.');

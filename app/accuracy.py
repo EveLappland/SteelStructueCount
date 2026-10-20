@@ -1,7 +1,7 @@
 """Quantity-weighted matching against an independent, scoped reference ledger."""
 from collections import Counter, defaultdict, deque
 
-from .geometry import section
+from .profiles import section
 from .member_recognition import normalize_view_tags
 
 

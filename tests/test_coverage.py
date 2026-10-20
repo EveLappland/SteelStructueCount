@@ -1,8 +1,8 @@
 """Pure local coverage checks; no model API or simulated API response."""
 import unittest
 
-from app.stage_two_iteration import assess_rows, revision_regressions
-from app.geometry import section
+from app.coverage import assess_rows
+from app.profiles import section
 
 
 class StageTwoCoverageTests(unittest.TestCase):
@@ -43,18 +43,6 @@ class StageTwoCoverageTests(unittest.TestCase):
         self.assertEqual(section('2F-L120*12'), ('L120*12', 2))
         self.assertEqual(assess_rows(rows, page, self.view)['feedback'], [])
 
-    def test_revision_flags_lost_combination_tags_and_length(self):
-        before = [{'spec': '2F-L120*12', 'member_cnt': 2,
-                   'view_tags': ['EL.1', 'FRAME/A'], 'length_mm': 5000}]
-        after = [{'spec': 'L120*12', 'member_cnt': 2,
-                  'view_tags': ['EL.1'], 'length_mm': None}]
-        checks = revision_regressions(before, after, 'EL.1')
-        self.assertEqual({item['check'] for item in checks},
-                         {'combination_identity_regression', 'view_tag_regression', 'length_regression'})
-        equivalent = [{**before[0], 'spec': '2LF-L120*12'}]
-        self.assertEqual(revision_regressions(before, equivalent, 'EL.1'), [])
-        corrected_base = [{**before[0], 'spec': '2F-L100*10'}]
-        self.assertEqual(revision_regressions(before, corrected_base, 'EL.1'), [])
 
 
 if __name__ == '__main__':

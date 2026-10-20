@@ -9,9 +9,9 @@ from pydantic import Field
 
 from .domain import Contract
 from .group_reconciliation import Resolution,Exclusion,reconcile,source_hash
-from .llm_runner import _api_settings
+from .settings import _api_settings
 from .member_recognition import view_tag
-from .geometry import section
+from .profiles import section
 from .native_pdf import write_json
 
 

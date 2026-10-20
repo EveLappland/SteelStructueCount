@@ -4,8 +4,8 @@ import hashlib
 import json
 from itertools import combinations
 
-from .geometry import section
-from .member_recognition import RecognizedMember,normalize_view_tags,view_tag
+from .profiles import section
+from .member_recognition import RecognizedMember,normalize_view_tags,view_tag,member_key
 from .view_filter import role
 
 
@@ -39,7 +39,7 @@ def build_group_review(data):
             invalid.append({'row_id':identity,'reason':str(error)})
             continue
         input_count+=row['member_cnt']
-        tags=tuple(row['view_tags']);key=(profile,multiplier,tags,row['length_mm'])
+        key=member_key(row);tags=key[1]
         group=buckets.setdefault(key,{'id':_identity(key),'profile':profile,'component_multiplier':multiplier,
             'spec':profile if multiplier==1 else f'{multiplier}LF-{profile}',
             'view_tags':list(tags),'length_mm':row['length_mm'],'sources':{},'row_issues':[]})
