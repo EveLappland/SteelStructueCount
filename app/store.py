@@ -199,10 +199,10 @@ class JobStore:
                 return 2
             export_retry = stage == 3 and row['status'] == 'approved' and job['active_stage'] == 4
             if export_retry and job['state']=='completed':
-                self._history(db,job_id,stage,row['revision'],'retry','重新执行第三阶段AI核验；保留旧结果。',json.loads(row['data']))
+                self._history(db,job_id,stage,row['revision'],'retry','重新执行第三阶段完整key去重；保留旧结果。',json.loads(row['data']))
                 db.execute("UPDATE stages SET revision=revision+1,status='queued' WHERE job_id=? AND stage=3",(job_id,))
                 db.execute("UPDATE jobs SET active_stage=3,result='{}' WHERE id=?",(job_id,))
-                self._event(db,job_id,'queued','重新执行第三阶段AI核验。')
+                self._event(db,job_id,'queued','重新执行第三阶段完整key去重。')
                 return 3
             if job['state'] not in ('failed', 'interrupted', 'awaiting_review'):
                 raise StoreError('任务当前不能重试。')

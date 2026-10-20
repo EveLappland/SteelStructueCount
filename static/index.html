@@ -4,7 +4,7 @@
 <body><main class="shell">
 <header><div><p class="eyebrow">PDF → 视图 → 钢材台账</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
 <section class="workspace">
-<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认由AI连续完成页面筛选、高清裁切、构件识别及核验去重，自动导出台账。疑点保留在审计与待处理清单；可选人工修改。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，手动检查后继续</label>
+<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认自动完成页面筛选、高清裁切、AI构件识别与完整key去重，导出台账。疑点保留在审计与待处理清单；可选人工修改。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，手动检查后继续</label>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
 <details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><label>AI 请求并发数<input id="max-concurrency" type="number" min="1" step="1" placeholder="默认3；设为1串行执行"></label><label>识图图片<select id="label-color-mode"><option value="original">原图（默认）</option><option value="colored">钢材名/轴线名着色图（实验）</option></select></label><small>第一阶段按页并发判断与定位，第二阶段按视图并发识别；PDF渲染串行执行。网页设置仅用于本次任务；重启后使用 .env 或重新填写。</small></details>
 <p id="upload-error" role="alert" hidden></p><button id="submit" type="submit">开始第一阶段</button></form>

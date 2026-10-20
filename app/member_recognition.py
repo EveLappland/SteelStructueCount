@@ -22,6 +22,18 @@ def normalize_view_tags(values):
     return sorted({name for value in values if (name:=normalize_view_tag(value))})
 
 
+def member_key(row):
+    """Physical grouping identity. Counts and source IDs are not identity fields."""
+    profile,multiplier=section(row['spec'])
+    spec=profile if multiplier==1 else f'{multiplier}LF-{profile}'
+    return spec,tuple(normalize_view_tags(row['view_tags'])),row['length_mm']
+
+
+def key_record(row):
+    spec,tags,length=member_key(row)
+    return {'spec':spec,'view_tags':list(tags),'length_mm':length}
+
+
 class RecognizedMember(Contract):
     spec: str = Field(min_length=1, max_length=120)
     view_tags: list[str] = Field(min_length=1)
@@ -184,7 +196,10 @@ def validate_rows(rows, view, stage_one):
                 tags.append(tag)
                 if len(matches)>1:issues.append('视图名称对应多个目录项，需确认标签')
         row['view_tags'] = sorted(set(tags))
+        identity=key_record(row)
         if set(row['view_tags']) - allowed: issues.append('引用了目录外或概览视图标签')
+        if len(set(row['view_tags'])-{source_tag})>1:
+            issues.append('模型返回多个所属轴面；不同标签的构件应分行，原行及数量保留')
         # Stage one's per-view list is a partial observation, not proof that a
         # globally known plane is absent from this member. Preserve the model's
         # image-based cross-view tags for later reconciliation.
@@ -194,6 +209,7 @@ def validate_rows(rows, view, stage_one):
         if row['issue']: issues.insert(0, row['issue'])
         result.append({**row, 'id': raw.get('id', f"{view['id']}-m{index:03d}"),
                        'source_view': view['id'], 'page_id': view['page_id'],
+                       'source_plane_tag':source_tag,'member_key':identity,
                        'evidence_ids':raw.get('evidence_ids',[]),
                        **({'length_input': length_input, 'length_formula': formula} if length_input else {}),
                        **({'legacy_basis':raw.get('legacy_basis',raw.get('basis'))}

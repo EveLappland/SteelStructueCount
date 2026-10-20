@@ -312,18 +312,14 @@ def execute(store, job_id, stage, directory, settings, *, reuse_saved=False,audi
         result=recognize_views(directory,one,settings,emit,audit,reuse_saved=reuse_saved)
     elif stage==3:
         two=store.stage(job_id,2)['data']
-        result=reconcile(two)
-        emit(f"第三阶段已生成 {len(result['review']['groups'])} 个匹配候选组，正在调用AI核验去重。")
-        audit.event('GROUP_REVIEW_GENERATED',source_hash=result['source_hash'],**result['review']['summary'])
-        from .group_proposal import propose_groups
-        proposal=propose_groups(two,directory,settings,emit,audit,reuse_saved=reuse_saved)
-        if not proposal['validation']['valid']:
-            raise ValueError('AI核验结果未通过本地检查，不能以空结果替代：'+proposal['validation']['error'])
-        result=proposal['data']
-        result['review']['ai_proposal']={k:proposal[k] for k in ('proposal','validation','folder')}
-        result['review']['ai_proposal']['applied']=True
-        audit.event('GROUP_PROPOSAL_APPLIED',source_hash=result['source_hash'],**result['totals'])
-        emit(f"AI核验完成：{len(result['members'])}根，{result['totals']['pending_observation_units']}个观察待处理。")
+        from .group_reconciliation import reconcile_exact
+        result=reconcile_exact(two)
+        audit.event('EXACT_KEY_RECONCILED',source_hash=result['source_hash'],**result['totals'],
+                    reason='只按(spec,完整view_tags,length)去重，不改写第二阶段标签、规格、长度或数量。')
+        for group in result['confirmed_groups']:
+            audit.event('EXACT_KEY_GROUP',group_id=group['id'],spec=group['spec'],view_tags=group['view_tags'],
+                        length_mm=group['length_mm'],member_cnt=group['member_cnt'],source_counts=group['source_counts'])
+        emit(f"按完整key去重完成：{len(result['members'])}根，扣除{result['totals']['deduplicated_observation_units']}个重复观察，{result['totals']['pending_observation_units']}个观察待处理。")
         for exception in result['exceptions']:audit.event('GROUP_OBSERVATION_PENDING',**exception)
     else:
         result=export(directory,*(store.stage(job_id,n)['data'] for n in (1,2,3)),
