@@ -74,3 +74,60 @@ class StoreTest(unittest.TestCase):
         self.store.claim('job',4);self.store.fail('job',4,'disk error')
         self.assertEqual(self.store.retry('job',3,1),4)
         self.assertEqual(self.store.stage('job',3)['status'],'approved')
+
+    def test_completed_job_restarts_two_preserving_one_and_history(self):
+        self.store.approve('job',1,1)
+        self.store.claim('job',2);self.store.complete_stage('job',2,{'length':'old'})
+        self.store.edit('job',2,1,{'length':'human'},'correction')
+        self.store.approve('job',2,2)
+        self.store.claim('job',3);self.store.complete_stage('job',3,{'count':1})
+        self.store.approve('job',3,1)
+        self.store.claim('job',4);self.store.finish('job',{'workbook':'old.xlsx','total':1})
+        original_one=self.store.stage('job',1)
+        with self.assertRaises(StoreError):self.store.retry('job',2,1)
+        self.assertEqual(self.store.get('job')['state'],'completed')
+        self.assertEqual(self.store.retry('job',2,2),2)
+        self.assertEqual(self.store.stage('job',1),original_one)
+        two=self.store.stage('job',2)
+        self.assertEqual((two['revision'],two['status'],two['data']),(3,'queued',{}))
+        self.assertEqual(self.store.stage('job',3)['status'],'stale')
+        self.assertEqual(self.store.stage('job',3)['revision'],2)
+        self.assertEqual(self.store.get('job')['active_stage'],2)
+        self.assertNotIn('workbook',self.store.get('job'))
+        history=self.store.snapshots('job')
+        self.assertTrue(any(s['action']=='retry' and s['data']=={'length':'human'} for s in history))
+        self.assertTrue(any(s['action']=='invalidated' and s['data']=={'count':1} for s in history))
+        with self.assertRaises(StoreError):self.store.retry('job',2,3)
+        with self.assertRaises(StoreError):self.store.approve('job',3,2)
+        self.store.claim('job',2);self.store.complete_stage('job',2,{'length':'new'})
+        # Explicit restart adopts new output even when old revisions had manual edits.
+        self.assertEqual(self.store.stage('job',2)['data'],{'length':'new'})
+        self.store.approve('job',2,3)
+        self.assertEqual(self.store.stage('job',3)['data'],{})
+        self.store.claim('job',3);self.store.complete_stage('job',3,{'count':2})
+        self.store.approve('job',3,2)
+        self.store.claim('job',4);self.store.finish('job',{'workbook':'new.xlsx','total':2})
+        self.assertEqual(self.store.get('job')['total'],2)
+
+    def test_completed_stage_two_retry_api_hides_previous_downloads(self):
+        root=Path(self.tmp.name)/'api'
+        app=create_app(root,start_workers=False)
+        with TestClient(app) as client:
+            identity=client.post('/api/jobs',files=[('files',('drawing.pdf',b'%PDF','application/pdf'))]).json()['id']
+            store=app.state.store
+            for stage in (1,2,3):
+                store.claim(identity,stage)
+                store.complete_stage(identity,stage,{'workflow':'image_first','stage':stage})
+                store.approve(identity,stage,1)
+            store.claim(identity,4);store.finish(identity,{'workbook':'old.xlsx','views_archive':'old.zip'})
+            prefix=f'/api/jobs/{identity}'
+            self.assertEqual(client.get(prefix+'/stages/2').json()['status'],'approved')
+            response=client.post(prefix+'/stages/2/retry',json={'revision':1,'settings':{'reasoning_effort':'high'}})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['active_stage'],2)
+            self.assertEqual(response.json()['state'],'queued')
+            self.assertTrue(response.json()['auto_run'])
+            self.assertIsNone(response.json()['download_url'])
+            self.assertIsNone(response.json()['views_download_url'])
+            self.assertEqual(client.get(prefix+'/download').status_code,404)
+            self.assertEqual(client.post(prefix+'/stages/2/retry',json={'revision':1}).status_code,409)

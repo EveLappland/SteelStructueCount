@@ -183,6 +183,20 @@ class JobStore:
         with self.transaction() as db:
             row = self._checked(db, job_id, stage, revision)
             job = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if stage == 2 and job['state'] == 'completed' and row['status'] == 'approved':
+                upstream = db.execute('SELECT status FROM stages WHERE job_id=? AND stage=1', (job_id,)).fetchone()
+                if not upstream or upstream['status'] != 'approved':
+                    raise StoreError('第一阶段必须已确认，才能从第二阶段重新执行。')
+                self._history(db, job_id, stage, revision, 'retry',
+                              '从第二阶段重新识别；旧台账及人工修改保留在历史，采用本次新结果。', json.loads(row['data']))
+                for downstream in db.execute('SELECT * FROM stages WHERE job_id=? AND stage>?', (job_id, stage)).fetchall():
+                    self._history(db, job_id, downstream['stage'], downstream['revision'], 'invalidated',
+                                  '第二阶段重新执行，下游结果失效。', json.loads(downstream['data']))
+                db.execute("UPDATE stages SET revision=revision+1,status='stale' WHERE job_id=? AND stage>?", (job_id, stage))
+                db.execute("UPDATE stages SET revision=revision+1,status='queued',data='{}' WHERE job_id=? AND stage=?", (job_id, stage))
+                db.execute("UPDATE jobs SET active_stage=2,result='{}' WHERE id=?", (job_id,))
+                self._event(db, job_id, 'queued', '从第二阶段重新执行；复用第一阶段视图和高清图，第三阶段与导出结果已失效。')
+                return 2
             export_retry = stage == 3 and row['status'] == 'approved' and job['active_stage'] == 4
             if export_retry and job['state']=='completed':
                 self._history(db,job_id,stage,row['revision'],'retry','重新执行第三阶段AI核验；保留旧结果。',json.loads(row['data']))
