@@ -1,14 +1,22 @@
 """Refresh native-label coverage after edits without changing recognition status."""
 from .coverage import assess_rows
+from .quantity_reference import assess_quantity
 
 
 def refresh_coverage(data,pages):
     pages={p['id']:p for p in pages}
     views={v['id']:v for v in data['views']}
     for analysis in data.get('view_analysis',[]):
-        if analysis['status'] not in ('completed','empty'):continue
+        if analysis['status'] not in ('completed','completed_with_warnings','empty'):continue
         view=views[analysis['view_id']]
         rows=[row for row in data['view_members'] if row['source_view']==view['id']]
+        if data.get('recognition_strategy')=='grid_agents':
+            assessment=assess_quantity(rows,view.get('quantity_reference'))
+            analysis.update(member_cnt=assessment['actual_total'],label_count=assessment['expected_total'],
+                quantity_reference_match=assessment['matches'],quantity_reference_available=assessment['reference_available'],
+                coverage_differences=assessment['differences'],
+                remaining_checks=[c for c in analysis.get('remaining_checks',[]) if c.get('check')!='stage_one_quantity_reference']+assessment['feedback'])
+            continue
         assessment=assess_rows(rows,pages[view['page_id']],view)
         count=assessment['member_cnt'];native_count=assessment['label_count']
         coverage=assessment['coverage_differences']

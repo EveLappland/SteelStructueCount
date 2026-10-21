@@ -1,7 +1,7 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
 const stageNames = {1:'视图、轴线与高清裁切',2:'图片识别钢材台账',3:'跨视图匹配与单根统计'};
-const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认'};
+const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认',completed_with_warnings:'已完成（有待处理项）',recognizing_grids:'网格识别中',coordinating:'总代理汇总中',empty:'空台账',region_pending:'裁切待确认'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, matchSource=null;
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
@@ -53,6 +53,7 @@ $('#upload-form').onsubmit=async event=>{
         start.disabled=true;start.textContent='正在上传图纸…';
         const form=new FormData();for(const file of files)form.append('files',file);
         form.append('auto_run',String(!$('#pause-stages').checked));
+        form.append('stop_after_stage',$('#stage12-only').checked?'2':'4');
         for(const [key,value]of Object.entries(settings()))form.append(key,value);
         const response=await fetch('/api/jobs',{method:'POST',body:form});
         const payload=await response.json();if(!response.ok)throw Error(payload.detail);
@@ -89,9 +90,10 @@ function renderViewLedger() {
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    target.append(table(['视图','识别状态','模型调用次数','钢材标签数','钢材数（未去重）','规格覆盖差异','尚存校验问题'],data.view_analysis.map(a=>[
+    if(data.recognition_strategy==='grid_agents')target.append(node('p',`网格子代理与总代理共用请求并发上限 ${data.grid_configuration?.request_concurrency??'—'}；UNKNOWN 长度暂不启动专项补全。`));
+    target.append(table(['视图','识别状态','网格数','模型请求数','第一阶段数量标准','构件数（组合未展开）','规格数量差异','尚存校验问题'],data.view_analysis.map(a=>[
         data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,
-        a.model_calls??a.rounds_attempted??'—',a.label_count,a.member_cnt,
+        a.grid_count??'—',a.model_calls??a.rounds_attempted??'—',a.label_count,a.member_cnt,
         (a.coverage_differences||[]).map(c=>`${c.spec}：${c.label_count}处标签 / ${c.member_cnt}根钢材`).join('；'),
         (a.remaining_checks||[]).map(c=>c.message).join('；')])));
     const choices=data.views.filter(v=>LedgerTools.viewRole(v)==='MEMBERS');
@@ -106,6 +108,8 @@ function renderViewLedger() {
         panel.append(node('p',`当前视图轴线或面名称数：${axes.length}；${axes.join('、')||'尚未提取'}`));
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
+        const analysis=data.view_analysis.find(a=>a.view_id===id);
+        if(analysis?.grid_tiles?.length){const grids=node('details');grids.append(node('summary',`${analysis.grid_tiles.length} 张识图网格（原图像素，无附加标记）`));for(const tile of analysis.grid_tiles)grids.append(node('a',`${tile.id} · ${tile.width_px}×${tile.height_px}`,{href:`/api/jobs/${jobId}/views/${tile.image_file}`,target:'_blank'}));panel.append(grids);}
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','长度依据 / 斜撑直角边 mm','构件位置','未解决问题','校验','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
             LedgerTools.tagEditor(document,r,[...data.views,...axisCatalog.axes.map(a=>({kind:a.kind||'ELEVATION',title:a.name,fixed_label:a.kind==='PLAN'?null:a.name}))],()=>{mark(r);refreshJson();}),
@@ -136,10 +140,12 @@ function renderConstructionCatalog(data,target,panel) {
     target.append(node('p','第一阶段：AI判断页面用途，只有建造布置图进入定位与300DPI裁切。连接节点、概览等未采用页只保留说明，不生成高清截图。'));
     target.append(node('h3',`${data.profile_catalog.length} 种钢材 · ${(summary.plan_names||[]).length} 个平面 · ${(summary.elevation_names||[]).length} 个立面`));
     target.append(node('p',`钢材种类：${data.profile_catalog.join('、')||'暂无'}；图中出现的不同面名称：${summary.plane_name_count||0} 个。`));
+    target.append(node('p',`第一阶段数量标准：已统计 ${summary.counted_views??0}/${data.views.length} 个视图，合计 ${summary.member_count_reference??0} 个构件段/组合；视图间尚未去重，未完成统计不能当作零根。`));
     target.append(table(['文件','PDF页','用途判断','说明','定位问题'],(data.page_decisions||[]).map(p=>[
         p.file,p.page,decisions[p.decision]||p.decision,p.reason,p.issue||''])));
-    target.append(table(['平面/立面名称','类型','相关面名称','钢材种类'],data.views.map(v=>[
-        LedgerTools.tagOf(v),v.kind==='PLAN'?'平面':'立面',(v.axis_labels||[]).join('、'),(v.steel_types||[]).join('、')])));
+    target.append(table(['平面/立面名称','类型','相关面名称','钢材种类','独立数量标准','各规格数量','数量问题'],data.views.map(v=>[
+        LedgerTools.tagOf(v),v.kind==='PLAN'?'平面':'立面',(v.axis_labels||[]).join('、'),(v.steel_types||[]).join('、'),
+        v.quantity_reference?.total_count??'未完成',(v.quantity_reference?.spec_counts||[]).map(c=>`${c.spec} × ${c.member_cnt}`).join('；'),v.quantity_reference?.issue||''])));
     function show(id){
         const view=data.views.find(v=>v.id===id);activeView=view;panel.replaceChildren(node('h3',view.title));
         if(view.image_file){const url=`/api/jobs/${jobId}/views/${view.image_file}`;panel.append(node('img','',{src:url,alt:view.title,style:'max-width:100%'}),node('a','打开300DPI高清图',{href:url,target:'_blank'}));}

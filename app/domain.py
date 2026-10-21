@@ -1,9 +1,8 @@
 """Contracts for the active page catalog and per-view recognition workflow."""
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-class Contract(BaseModel):
-    model_config = ConfigDict(extra='forbid', allow_inf_nan=False, str_strip_whitespace=True)
+from pydantic import ConfigDict, Field, model_validator
+from .domain_base import Contract
+from .quantity_reference import QuantityReference
 
 
 
@@ -48,6 +47,8 @@ class View(Contract):
     takeoff_role: Literal['MEMBERS','REFERENCE','EXCLUDE','REVIEW'] = 'MEMBERS'
     filter_reason: str = ''
     filter_reviewed: bool = False
+    quantity_reference: QuantityReference | None = None
+    quantity_reference_image: str = ''
 
     @model_validator(mode='after')
     def valid_box(self):
@@ -74,6 +75,8 @@ class StageOne(Contract):
 
 class StageTwo(StageOne):
     recognition_mode: Literal['view_ledger'] = 'view_ledger'
+    recognition_strategy: Literal['grid_agents'] | None = None
+    grid_configuration: dict = Field(default_factory=dict)
     view_members: list[dict] = Field(default_factory=list)
     view_analysis: list[dict] = Field(default_factory=list)
     length_catalog: list[dict] = Field(default_factory=list)

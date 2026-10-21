@@ -188,6 +188,7 @@ def validate_rows(rows, view, stage_one):
         prepared['view_tags']=normalize_view_tags([*raw.get('view_tags',[]),source_tag])
         row = RecognizedMember.model_validate(prepared).model_dump()
         issues = list(calculated_issues)
+        issues.extend(raw.get('grid_checks',[]))
         tags=[]
         for tag in row['view_tags']:
             matches=aliases.get(tag,set())
@@ -214,7 +215,8 @@ def validate_rows(rows, view, stage_one):
                        **({'length_input': length_input, 'length_formula': formula} if length_input else {}),
                        **({'legacy_basis':raw.get('legacy_basis',raw.get('basis'))}
                           if raw.get('legacy_basis') or raw.get('basis') else {}),
-                       'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review'})
+                       'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review',
+                       **{name:raw[name] for name in ('candidate_ids','segmentation_status','endpoints','original_label_point','grid_checks') if name in raw}})
     return result
 
 

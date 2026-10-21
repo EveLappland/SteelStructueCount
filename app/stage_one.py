@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 import time
-from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED,as_completed
 from pathlib import Path
 from typing import Literal
 from pydantic import Field,model_validator
@@ -12,6 +12,7 @@ from .axis_catalog import build_axis_catalog
 from .profiles import section
 from .member_recognition import normalize_view_tag,normalize_view_tags
 from .native_pdf import write_json
+from .quantity_reference import QuantityReference
 
 
 class PageAssessment(Contract):
@@ -77,6 +78,8 @@ def refresh_catalog(data,pages):
         view['plane_name']=normalize_view_tag(view['plane_name'])
         view['axis_labels']=normalize_view_tags([view['plane_name'],*view.get('axis_labels',[])])
         view['steel_types']=_steel_types(view.get('steel_types',[]))
+        if view.get('quantity_reference') is not None:
+            view['quantity_reference']=QuantityReference.model_validate(view['quantity_reference']).model_dump()
         if view['kind']=='ELEVATION':view['fixed_label']=view['plane_name']
         record['view_ids'].append(view['id'])
         if not view['region_confirmed']:warnings.append(f"裁切待确认：{view['title']}")
@@ -100,7 +103,73 @@ def refresh_catalog(data,pages):
         'plane_names':[a['name'] for a in data['axis_catalog']['axes']],
         'skipped_pages':sum(p['status']=='skipped' for p in data['page_decisions']),
         'pending_pages':sum(p['status']=='needs_review' for p in data['page_decisions'])}
+    counted=[v for v in data['views'] if (v.get('quantity_reference') or {}).get('total_count') is not None]
+    data['catalog_summary'].update(counted_views=len(counted),uncounted_views=len(data['views'])-len(counted),
+        member_count_reference=sum(v['quantity_reference']['total_count'] for v in counted),
+        member_count_reference_complete=len(counted)==len(data['views']))
+    for view in data['views']:
+        reference=view.get('quantity_reference')
+        if not reference or reference.get('total_count') is None:
+            warnings.append(f"数量标准待补充：{view['title']}；{(reference or {}).get('issue') or '没有独立数量标准，不能当作零根。'}")
+        elif reference.get('issue'):
+            warnings.append(f"数量标准说明：{view['title']}；{reference['issue']}")
     return data
+
+
+def prepare_quantities(directory,result,pages,settings,emit,audit,*,reuse_saved=False):
+    """After serial PDF rendering, independent per-view image/text counts."""
+    from .pipeline import model_call,OpenAI,response_content
+    from .settings import _api_settings
+    from .ai_concurrency import view_concurrency
+    from .native_pdf import inside
+    source={p['id']:p for p in pages}
+    views=[v for v in result['views'] if v.get('region_confirmed') and v.get('image_file')]
+    if not views:return
+    base,key,model=_api_settings(settings)
+    folder=directory/'responses'/f'attempt-counts-{uuid.uuid4().hex}'
+    prepared=[]
+    for view in views:
+        texts=[{'id':t['id'],'text':t['text'],'bbox':t['bbox']} for t in source[view['page_id']]['texts'] if inside(t,view['bbox'])]
+        metadata={'view_id':view['id'],'title':view['title'],'current_view_tag':view['plane_name'],
+                  'axis_names':view['axis_labels'],'profile_catalog':view['steel_types'],
+                  'texts':texts,'coordinate_note':'文字 bbox 为PDF页归一化位置，仅用于定位，不能推算毫米。'}
+        entry={'id':view['id']+'_quantity','source_path':str(directory/'views'/view['image_file']),
+               'page':source[view['page_id']]['page'],'image_path':str(directory/'views'/view['image_file']),'image_dpi':300}
+        prepared.append((view,entry,_prompt('view_quantity.md')+'\n输入：\n'+json.dumps(metadata,ensure_ascii=False)))
+
+    def count(entry,prompt):
+        with OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1) as client:
+            for attempt in range(2):
+                name=entry['id']+('' if not attempt else '_format01')
+                path=folder/f'{name}.json'
+                try:
+                    return model_call(client,model,prompt,{**entry,'id':name},path,QuantityReference,
+                        emit=emit,audit=audit,reuse_saved=reuse_saved,reasoning_effort=settings.get('reasoning_effort','high'))
+                except Exception as error:
+                    if attempt:raise
+                    previous=None
+                    if path.exists():
+                        try:previous=response_content(json.loads(path.read_text(encoding='utf-8')))
+                        except (ValueError,KeyError,TypeError):pass
+                    prompt+='\n上一次请求未通过本地解析，按图重新返回符合schema的数量对象，不要猜数或增加附加字段。错误和旧回复仅供定位问题：\n'+json.dumps({'error':audit.scrub(str(error)),'previous_reply':previous},ensure_ascii=False)
+                    audit.event('QUANTITY_FORMAT_RETRY',view_id=entry['id'],error=str(error))
+    workers=min(view_concurrency(settings),len(prepared))
+    emit(f'第一阶段独立统计数量：{len(views)} 个视图，请求并发上限 {workers}。')
+    with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='steel-count') as executor:
+        futures={executor.submit(count,entry,prompt):(view,entry,prompt) for view,entry,prompt in prepared}
+        for future in as_completed(futures):
+            view,entry,_=futures[future]
+            try:
+                view['quantity_reference']=QuantityReference.model_validate(future.result()).model_dump()
+                view['quantity_reference_image']=view['image_file']
+                audit.event('VIEW_QUANTITY_REFERENCE_READY',view_id=view['id'],**view['quantity_reference'])
+                emit(f"数量标准：{view['title']}，{view['quantity_reference']['total_count']} 个构件段/组合。")
+            except Exception as error:
+                reason=audit.scrub(str(error))
+                view['quantity_reference']={'total_count':None,'spec_counts':[],'issue':reason}
+                audit.event('VIEW_QUANTITY_REFERENCE_FAILED',view_id=view['id'],error=reason)
+                emit(f"数量标准未完成：{view['title']}；原因已记录，不能当作零根。")
+            write_json(directory/'quantity_reference_checkpoint.json',{'views':result['views']})
 
 
 def prepare(directory,settings,emit,audit,*,reuse_saved=False):
@@ -201,6 +270,8 @@ def prepare(directory,settings,emit,audit,*,reuse_saved=False):
                     except Exception as error:finish(i,error)
     refresh_catalog(result,pages)
     freeze_images(directory,result)
+    prepare_quantities(directory,result,pages,settings,emit,audit,reuse_saved=reuse_saved)
+    refresh_catalog(result,pages)
     audit.event('PAGE_BATCH_FINISHED',pages=len(pages),workers=workers,elapsed_seconds=round(time.monotonic()-started,3))
     audit.event('CONSTRUCTION_CATALOG_READY',**result['catalog_summary'],
                 reason='仅有效建造视图生成300DPI裁切；钢材与面目录来自AI枚举，程序去重计数。')

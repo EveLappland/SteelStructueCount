@@ -62,11 +62,16 @@ def create_app(root=ROOT, start_workers=True):
         with serial:
             try:
                 policy=jobs/job_id/'workflow.json'
-                automatic=json.loads(policy.read_text(encoding='utf-8')).get('auto_run',False) if policy.is_file() else False
+                workflow=json.loads(policy.read_text(encoding='utf-8')) if policy.is_file() else {}
+                automatic=workflow.get('auto_run',False)
+                stop_after=workflow.get('stop_after_stage',4)
                 while store.claim(job_id,stage):
                     audit=AuditLog(jobs/job_id,stage=stage,secrets=(credentials.get(job_id,{}).get('api_key'),os.getenv('LLM_API_KEY')))
                     try:
                         execute(store,job_id,stage,jobs/job_id,credentials.get(job_id,{}),reuse_saved=reuse_saved,audit=audit)
+                        if stage>=stop_after:
+                            store.progress(job_id,f'已完成第 {stage} 阶段，按任务设置暂停；未自动执行后续阶段。')
+                            break
                         if stage==4 or not automatic:break
                         draft=store.stage(job_id,stage)
                         if stage==1 and not draft['data'].get('views'):
@@ -98,7 +103,7 @@ def create_app(root=ROOT, start_workers=True):
     def create_job(files:list[UploadFile]=File(...),base_url:str=Form(''),
                    api_key:str=Form(''),model:str=Form(''),
                    max_concurrency:int|None=Form(None,ge=1),auto_run:bool=Form(True),
-                   label_color_mode:str=Form('original')):
+                   label_color_mode:str=Form('original'),stop_after_stage:int=Form(4,ge=1,le=4)):
         if label_color_mode not in ('original','colored'):
             raise HTTPException(400,'标签图像模式必须为 original 或 colored。')
         pdfs=[file for file in files if file.filename and file.filename.lower().endswith('.pdf')]
@@ -115,7 +120,7 @@ def create_app(root=ROOT, start_workers=True):
             except OSError as exc:
                 raise HTTPException(500,'无法保存上传文件。') from exc
         store.create(job_id)
-        (jobs/job_id/'workflow.json').write_text(json.dumps({'auto_run':auto_run}),encoding='utf-8')
+        (jobs/job_id/'workflow.json').write_text(json.dumps({'auto_run':auto_run,'stop_after_stage':stop_after_stage}),encoding='utf-8')
         launch(job_id,1,{'base_url':base_url,'api_key':api_key,'model':model,
                         'max_concurrency':str(max_concurrency) if max_concurrency is not None else '',
                         'label_color_mode':label_color_mode})
@@ -129,7 +134,9 @@ def create_app(root=ROOT, start_workers=True):
     def status(job_id:str):
         job=store.get(job_id)
         policy=jobs/job_id/'workflow.json'
-        job['auto_run']=json.loads(policy.read_text(encoding='utf-8')).get('auto_run',False) if policy.is_file() else False
+        workflow=json.loads(policy.read_text(encoding='utf-8')) if policy.is_file() else {}
+        job['auto_run']=workflow.get('auto_run',False)
+        job['stop_after_stage']=workflow.get('stop_after_stage',4)
         job['download_url']=f'/api/jobs/{job_id}/download' if job.get('workbook') else None
         job['views_download_url']=f'/api/jobs/{job_id}/views-download' if job.get('views_archive') else None
         try:
@@ -193,7 +200,9 @@ def create_app(root=ROOT, start_workers=True):
         next_stage=store.approve(job_id,stage,body.revision,body.acknowledge_pending,reason=body.reason)
         if next_stage:
             if body.auto_run is not None:
-                (directory(job_id)/'workflow.json').write_text(json.dumps({'auto_run':body.auto_run}),encoding='utf-8')
+                policy=directory(job_id)/'workflow.json'
+                workflow=json.loads(policy.read_text(encoding='utf-8'))
+                policy.write_text(json.dumps({**workflow,'auto_run':body.auto_run}),encoding='utf-8')
             AuditLog(directory(job_id),stage).event('STAGE_APPROVED',revision=body.revision,
                 acknowledge_pending=body.acknowledge_pending,reason=body.reason or '用户确认。')
             launch(job_id,next_stage,{**body.settings,'reasoning_effort':'high'})
@@ -211,7 +220,9 @@ def create_app(root=ROOT, start_workers=True):
         if stage==3 and body.settings.get('review_mode')=='ai':resume=body.reuse_saved
         next_stage=store.retry(job_id,stage,body.revision)
         if body.auto_run is not None:
-            (directory(job_id)/'workflow.json').write_text(json.dumps({'auto_run':body.auto_run}),encoding='utf-8')
+            policy=directory(job_id)/'workflow.json'
+            workflow=json.loads(policy.read_text(encoding='utf-8'))
+            policy.write_text(json.dumps({**workflow,'auto_run':body.auto_run}),encoding='utf-8')
         launch(job_id,next_stage,body.settings,reuse_saved=resume)
         return status(job_id)
 
@@ -237,6 +248,8 @@ def create_app(root=ROOT, start_workers=True):
         allowed={p['id']+'.jpg' for p in native_index(job_id)}
         for n in (1,2):
             try:
+                allowed.update(tile['image_file'] for analysis in store.stage(job_id,n)['data'].get('view_analysis',[])
+                               for tile in analysis.get('grid_tiles',[]))
                 allowed.update(v['id']+'.jpg' for v in store.stage(job_id,n)['data'].get('views',[]))
                 allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[])
                                if v.get('localization') or store.stage(job_id,n)['data'].get('recognition_mode')=='view_ledger')
@@ -249,6 +262,8 @@ def create_app(root=ROOT, start_workers=True):
         path=folder/'views'/filename
         for snapshot in store.snapshots(job_id):
             if snapshot['stage'] not in (1,2):continue
+            allowed.update(tile['image_file'] for analysis in snapshot.get('data',{}).get('view_analysis',[])
+                           for tile in analysis.get('grid_tiles',[]))
             for view in snapshot.get('data',{}).get('views',[]):
                 if view.get('image_file'):allowed.add(view['image_file'])
                 allowed.update(view.get('detail_files',[]))
