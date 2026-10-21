@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from PIL import Image
-from app.length_expert import calibration,estimate,target_rows,assess_reply,apply_reply,LengthExpertResponse
+from app.length_expert import calibration,estimate,target_rows,assess_reply,apply_reply,LengthExpertResponse,DimensionReference
 from app.length_context import freeze_context,work_package
 from app.grid_workflow import Task
 from app.member_recognition import validate_ledger
@@ -35,6 +35,12 @@ class LengthMathTests(unittest.TestCase):
         ref=reference('EL1',107500);ref['kind']='LEVEL'
         small=reference('D1',1000,start=(.1,.1),end=(.12,.1))
         self.assertEqual(calibration([ref,small],[1000,1000])['X']['samples'],[])
+
+    def test_level_reference_may_have_only_one_anchor(self):
+        ref=DimensionReference.model_validate({'id':'EL1075','kind':'LEVEL','axis':'Y','value_mm':107500,
+            'start':{'name':'EL.107.500(TOS)','point':[.1,.5]},'evidence':'single level datum, no span endpoint'})
+        self.assertIsNone(ref.end)
+        self.assertEqual(calibration([ref.model_dump()],[1000,1000])['Y']['status'],'insufficient')
 
     def test_context_crop_contains_exact_original_pixels(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -91,6 +97,16 @@ class LengthMathTests(unittest.TestCase):
 
 
 class RecordedExpertTests(unittest.TestCase):
+    def test_real_05_reply_accepts_single_point_level_references(self):
+        root=Path(__file__).resolve().parents[1]
+        directory=root/'tmp/length_expert_feature_server/data/jobs/a773986b84a0413ca1fe597912902e0d'
+        paths=list((directory/'responses').glob('attempt-grid-*/f000-p001-view03_length_expert00_format00.json'))
+        if not paths:self.skipTest('需要保存的05真实专家回复')
+        from app.pipeline import response_content
+        payload=LengthExpertResponse.model_validate_json(response_content(json.loads(paths[0].read_text(encoding='utf-8'))))
+        self.assertEqual(len(payload.results),4)
+        self.assertTrue(any(r.kind=='LEVEL' and r.end is None for r in payload.references))
+
     def test_real_expert_reply_preserves_identity_and_survives_draft_validation(self):
         root=Path(__file__).resolve().parents[1]
         directory=root/'tmp/length_expert_feature_server/data/jobs/4afc8ea11a3a49bb83b83ce64e0a715a'

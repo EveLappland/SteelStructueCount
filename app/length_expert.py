@@ -32,8 +32,8 @@ class DimensionReference(Contract):
     kind: Literal['DIMENSION','LEVEL','OFFSET']
     axis: Literal['X','Y']
     value_mm: float
-    start: Anchor | None
-    end: Anchor | None
+    start: Anchor | None = None
+    end: Anchor | None = None
     evidence: str = Field(min_length=1,max_length=1800)
 
 

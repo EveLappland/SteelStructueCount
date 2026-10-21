@@ -290,7 +290,8 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
                         prompt+='\n请结合原图片重新返回完整JSON，严格遵循schema，不增加额外字段（null也不允许），不能为修复格式改变图中数量或猜长度。'
                         queue.appendleft(replace(task,prompt=prompt,format_retry=task.format_retry+1))
                         audit.event('GRID_FORMAT_RETRY',view_id=task.view_id,task=task.name,error=reply['error'])
-                        emit(f"格式/请求重试：{item['view']['title']} {task.tile_id or '总代理'}；其他有效回复保留。")
+                        label=task.tile_id if task.kind=='child' else '长度专家' if task.kind=='length_expert' else '总代理'
+                        emit(f"格式/请求重试：{item['view']['title']} {label}；其他有效回复保留。")
                         continue
                     if task.kind=='child':item['child_errors'][task.tile_id]=reply['error']
                     elif task.kind=='length_expert':expert_failed(item,reply['error'])
