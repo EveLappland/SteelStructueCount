@@ -78,7 +78,7 @@ def main():
             'views':two['view_analysis'],'member_records':len(two['view_members']),
             'member_count':sum(r['member_cnt'] for r in two['view_members']),
             'unknown_length_records':sum(r['length_mm'] is None for r in two['view_members']),
-            'unknown_specialist_called':any('splice' in e.get('page','') for e in events if e['event']=='MODEL_REQUEST_STARTED'),
+            'unknown_specialist_called':any(e.get('task_kind')=='length_expert' for e in events if e['event']=='MODEL_REQUEST_STARTED'),
             'warnings':two['warnings']}
     report['checks']={'stopped_after_two':report['stages_created']==[1,2],
         'all_views_processed':bool(two['view_analysis']) and all(v['status'] in ('completed','completed_with_warnings','empty') for v in two['view_analysis']),
@@ -86,12 +86,12 @@ def main():
         'request_limit_respected':peak<=args.max_concurrency,
         'source_planes_preserved':all(r['source_plane_tag'] in r['view_tags'] for r in two['view_members']),
         'grid_mode_used':two.get('recognition_strategy')=='grid_agents',
-        'no_unknown_specialist':not report['unknown_specialist_called']}
+        'length_expert_finished':all((a.get('length_expert') or {}).get('status') in ('completed','completed_with_warnings','skipped') for a in two['view_analysis']) if two.get('grid_configuration',{}).get('length_expert') else not report['unknown_specialist_called']}
     write(args.output/'report.json',report)
     lines=['# 第一、二阶段真实 API 联调','',f"任务：{report['url']}",'',
         f"第一阶段 {durations['1']:.2f} 秒；第二阶段 {durations['2']:.2f} 秒。",
         f"请求数：{calls}；实际同时请求峰值 {peak} / 上限 {args.max_concurrency}。",
-        f"逐根/组合记录 {report['member_records']} 条；未知长度 {report['unknown_length_records']} 条，未触发专项补全。",'',
+        f"逐根/组合记录 {report['member_records']} 条；未知长度 {report['unknown_length_records']} 条；长度专家调用 {report['unknown_specialist_called']}。",'',
         '| 检查 | 结果 |','|---|---|',*[f'| {key} | {value} |' for key,value in report['checks'].items()],
         '', '| 视图 | 网格 | 第一阶段数量标准 | 第二阶段数量 | 数量匹配 | 模型请求数 | 状态 |',
         '|---|---:|---:|---:|---|---:|---|']

@@ -79,6 +79,15 @@ class ActiveApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.url+'/views/'+image).status_code,200)
         self.assertEqual(self.client.get(self.url+'/views/grid-unreferenced.png').status_code,404)
 
+    def test_expert_expanded_crop_is_whitelisted_by_stage_reference(self):
+        two=self.prepare_two();view=self.one['views'][0]
+        from app.length_context import freeze_context
+        crop=freeze_context(self.folder,'v',self.folder/'views'/view['image_file'],{'bbox':[0,0,.9,1],'reason':'remote dimension'})
+        two['view_analysis']=[{'view_id':'v','status':'completed','length_expert_context_images':[crop]}]
+        self.store.edit(self.job,2,1,two,'Expert expanded context')
+        self.assertEqual(self.client.get(self.url+'/views/'+crop['image_file']).status_code,200)
+        self.assertEqual(self.client.get(self.url+'/views/length-context-unreferenced.png').status_code,404)
+
     def test_second_stage_cannot_mutate_upstream_views(self):
         two=self.prepare_two();changed=copy.deepcopy(two)
         changed['views'][0]['bbox']=[0,0,.8,1]

@@ -1,7 +1,7 @@
 """One ready queue for all grid workers, coordinators and bounded repairs.
 
 Only HTTP requests run on workers. PNG preparation, validation, trace writes and
-shared-ledger checkpoints belong to the coordinator. UNKNOWN is not a trigger.
+shared-ledger checkpoints belong to the coordinator. Length experts use the same queue.
 """
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
@@ -17,6 +17,8 @@ from .domain import StageTwo
 from .grid_contracts import GridChildResponse,GridMasterResponse
 from .grid_layout import freeze_grid
 from .grid_validation import assess_master
+from .length_expert import LengthExpertResponse,target_rows,assess_reply,apply_reply
+from .length_context import work_package,freeze_context
 from .member_recognition import validate_rows,validate_ledger
 from .native_pdf import write_json
 from .quantity_reference import assess_quantity
@@ -39,11 +41,11 @@ class Task:
 
     @property
     def name(self):
-        phase=self.tile_id if self.kind=='child' else f'master{self.round:02d}'
+        phase=self.tile_id if self.kind=='child' else f'{self.kind}{self.round:02d}'
         return f'{self.view_id}_{phase}_format{self.format_retry:02d}'
 
     @property
-    def contract(self):return GridChildResponse if self.kind=='child' else GridMasterResponse
+    def contract(self):return {'child':GridChildResponse,'master':GridMasterResponse,'length_expert':LengthExpertResponse}[self.kind]
 
 
 def prompt_file(name):return (Path(__file__).parent/'prompts'/name).read_text(encoding='utf-8')
@@ -86,8 +88,7 @@ def ledger_rows(payload,view,one,feedback):
 
 def master_task(item,*,previous=None,feedback=None,round=0):
     plan=item['plan'];context=item['context']
-    # Keep the established grid experiment selection behavior. UNKNOWN records
-    # remain valid output; no splice or length-specialist call is introduced.
+    # Keep master reconciliation bounded. Length work happens after adoption.
     related={t for f in (feedback or []) for t in f.get('tile_ids',[])}
     if not related:related={t['id'] for t in plan['tiles']}
     related.add(plan['tiles'][0]['id'])
@@ -106,7 +107,7 @@ def master_task(item,*,previous=None,feedback=None,round=0):
     return Task(item['view']['id'],'master',entry,text+'\n输入：\n'+json.dumps(payload,ensure_ascii=False),round=round)
 
 
-def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
+def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,recorded_masters=None):
     from .pipeline import load_native,model_call,OpenAI,response_content
     started=time.monotonic();directory=Path(directory);limit=view_concurrency(settings)
     base,key,model=_api_settings(settings)
@@ -115,7 +116,8 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
     result=StageTwo(**one,recognition_strategy='grid_agents',grid_configuration={
         'request_concurrency':limit,'trigger_px':2200,'target_core_px':1800,'overlap_px':240,
         'max_master_repairs':MAX_MASTER_REPAIRS,'max_format_retries':MAX_FORMAT_RETRIES,
-        'unknown_length_specialist':False}).model_dump()
+        'unknown_length_specialist':True,'length_expert':True,'max_length_rounds':2,
+        'scale_mode':'auxiliary_only','master_input_mode':'recorded_real_output' if recorded_masters is not None else 'grid_requests'}).model_dump()
     result['warnings']=[]
     folder=directory/'responses'/f'attempt-grid-{uuid.uuid4().hex}'
     trace=directory/'grid_runs'/folder.name;prepared=[];queue=deque();pending={}
@@ -146,6 +148,12 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                               quantity_reference=view.get('quantity_reference'),grid_tiles=plan['tiles'])
         write_json(trace/view['id']/'input.json',{'stage_one_context':context,'grid':plan,
                    'stage_one_views':len(one['views']),'image_sha256':plan['input_sha256']})
+        if recorded_masters is not None:
+            replay=recorded_masters[view['id']]
+            if replay['image_sha256']!=plan['input_sha256']:raise ValueError('保存的总代理结果与第一阶段图片指纹不一致，不能用于长度实验')
+            item['located']=replay['located'];item['replay']=replay
+            item['status']['children_completed']=len(plan['tiles'])
+            continue
         for tile in plan['tiles']:
             metadata={'stage_one_context':context,'tile':tile,
                       'original_size_px':[plan['width_px'],plan['height_px']],
@@ -196,11 +204,63 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
         write_json(trace/item['view']['id']/'master_result.json',payload)
         write_json(trace/item['view']['id']/'assessment.json',{'structure':assessment,'quantity':quantity})
         for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row)
-        emit(f"视图完成：{item['view']['title']}，{len(rows)} 条记录；第一阶段数量标准 {quantity['expected_total']}。")
+        emit(f"总代理完成：{item['view']['title']}，{len(rows)} 条记录；第一阶段数量标准 {quantity['expected_total']}。")
+        if target_rows(rows):
+            item['status']['length_expert']={'status':'queued','target_count':len(target_rows(rows))}
+            entry,prompt=work_package(item)
+            queue.appendleft(Task(item['view']['id'],'length_expert',entry,prompt))
+        else:item['status']['length_expert']={'status':'skipped','target_count':0}
+
+    def expert_failed(item,message):
+        item['status'].update(status='completed_with_warnings',model_calls=item['calls'])
+        item['status']['length_expert'].update(status='failed',error=message)
+        item['warnings'].append(f"{item['view']['title']}：长度专家失败，保留总代理台账；{message}")
+        for row in target_rows(item['rows']):row['length_expert_checks']=['长度专家调用失败，原长度与问题保留。']
+        audit.event('LENGTH_EXPERT_FAILED',view_id=item['view']['id'],error=message)
+
+    def expert_completed(item,payload,task):
+        size=[item['plan']['width_px'],item['plan']['height_px']]
+        assessment=assess_reply(payload,item['rows'],size)
+        expert_path=trace/item['view']['id']/'length_expert'
+        write_json(expert_path/f'round{task.round:02d}_assessment.json',assessment)
+        need_context=payload.get('context_request')
+        if task.round<1 and (need_context or assessment['feedback']):
+            if need_context:
+                crop=freeze_context(directory,item['view']['id'],Path(item['entry']['image_path']),need_context)
+                item.setdefault('expert_contexts',[]).append(crop)
+                item['status']['length_expert_context_images']=item['expert_contexts']
+                audit.event('LENGTH_CONTEXT_EXPANDED',view_id=item['view']['id'],**crop)
+            entry,prompt=work_package(item,previous=payload,feedback=assessment['feedback'],round=task.round+1)
+            queue.appendleft(Task(task.view_id,'length_expert',entry,prompt,round=task.round+1))
+            return
+        if need_context:
+            assessment['feedback'].append({'check':'context_budget','message':'扩展上下文已达一次上限；未解决记录及补图请求保留，不继续循环。'})
+        revised,changes=apply_reply(item['rows'],assessment)
+        item['rows']=validate_rows(revised,item['view'],one)
+        expert_status=item['status']['length_expert']
+        expert_status.update(status='completed_with_warnings' if assessment['feedback'] or any(not c['applied'] for c in changes) else 'completed',
+            rounds=task.round+1,applied_count=sum(c['applied'] for c in changes),changed_count=sum(c['applied'] and c['before_mm']!=c['after_mm'] for c in changes),
+            unknown_remaining=sum(r['length_mm'] is None for r in item['rows']),calibration=assessment['calibration'],
+            feedback=assessment['feedback'],changes=changes)
+        item['status'].update(status='completed_with_warnings' if expert_status['status']=='completed_with_warnings' or item['status'].get('remaining_checks') else 'completed',
+                             model_calls=item['calls'])
+        if assessment['feedback']:item['warnings'].append(f"{item['view']['title']}：长度专家仍有 {len(assessment['feedback'])} 项本地检查问题；原台账和有效修订保留。")
+        write_json(expert_path/'result.json',payload);write_json(expert_path/'changes.json',changes)
+        for change in changes:audit.event('LENGTH_RESULT_APPLIED' if change['applied'] else 'LENGTH_RESULT_RETAINED',view_id=task.view_id,**change)
+        emit(f"长度专家完成：{item['view']['title']}，合入 {expert_status['applied_count']} 条，未知长度剩余 {expert_status['unknown_remaining']} 条。")
 
     audit.event('GRID_BATCH_STARTED',configured_concurrency=limit,views=len(prepared),grid_requests=len(queue),
-                reason='网格、总代理和格式重试共用一个就绪队列与线程池，无嵌套线程池；UNKNOWN不触发补全。')
-    emit(f'第二阶段网格识图：{len(prepared)} 个视图，{len(queue)} 个网格，共享请求并发上限 {limit}。')
+                reason='网格、总代理、长度专家和重试共用一个就绪队列与线程池，无嵌套线程池。')
+    for item in prepared:
+        if 'replay' not in item:continue
+        replay=item['replay'];payload=GridMasterResponse.model_validate(replay['payload']).model_dump(mode='json')
+        assessment=assess_master({'view':{'plane_name':item['context']['current_view_tag']},**payload},item['located'],item['plan']['tiles'])
+        quantity=assess_quantity(payload['members'],item['view'].get('quantity_reference'))
+        audit.event('GRID_MASTER_REPLAYED',view_id=item['view']['id'],image_sha256=replay['image_sha256'],source=replay['source'],
+                    reason='显式实验模式：冻结真实 master 输出，只对长度专家调用API，不模拟回答或修改旧记录。')
+        write_json(trace/item['view']['id']/'recorded_master_source.json',replay)
+        adopt(item,payload,assessment,quantity,0,assessment['feedback']+quantity['feedback'])
+    emit(f"第二阶段网格识图：{len(prepared)} 个视图，{sum(len(i['plan']['tiles']) for i in prepared if 'plan' in i)} 个网格，共享请求并发上限 {limit}。")
     checkpoint()
     with ThreadPoolExecutor(max_workers=min(limit,len(queue)) or 1,thread_name_prefix='steel-grid') as executor:
         while queue or pending:
@@ -208,7 +268,8 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
             while queue and len(pending)<limit:
                 task=queue.popleft();item=by_id[task.view_id]
                 item['calls']+=1;item['status']['model_calls']=item['calls']
-                item['status']['status']='recognizing_grids' if task.kind=='child' else 'coordinating'
+                item['status']['status']={'child':'recognizing_grids','master':'coordinating','length_expert':'checking_lengths'}[task.kind]
+                if task.kind=='length_expert':item['status']['length_expert'].update(status='running',round=task.round+1)
                 future=executor.submit(request,task);pending[future]=task
                 dispatched=True
                 audit.event('GRID_REQUEST_QUEUED',view_id=task.view_id,kind=task.kind,tile_id=task.tile_id,
@@ -232,11 +293,15 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False):
                         emit(f"格式/请求重试：{item['view']['title']} {task.tile_id or '总代理'}；其他有效回复保留。")
                         continue
                     if task.kind=='child':item['child_errors'][task.tile_id]=reply['error']
+                    elif task.kind=='length_expert':expert_failed(item,reply['error'])
                     else:fail(item,reply['error'])
                 else:
                     payload=task.contract.model_validate(reply['payload']).model_dump(mode='json')
                     write_json(trace/task.view_id/f'{task.name}.json',payload)
                     if task.kind=='child':item['children'][task.tile_id]=payload
+                    elif task.kind=='length_expert':
+                        try:expert_completed(item,payload,task)
+                        except Exception as error:expert_failed(item,audit.scrub(str(error)))
                     else:
                         assessment=assess_master({'view':{'plane_name':item['context']['current_view_tag']},**payload},item['located'],item['plan']['tiles'])
                         quantity=assess_quantity(payload['members'],item['view'].get('quantity_reference'))

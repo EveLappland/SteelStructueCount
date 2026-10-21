@@ -248,6 +248,11 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
     workbook=Workbook()
     workbook.remove(workbook.active)
     sheets=export_sheets(stage_two,stage_three)
+    if stage_two.get('grid_configuration',{}).get('length_expert'):
+        sheets.append(('Length Expert Audit',['构件ID','规格','专家状态','已合入','修订前长度 mm','当前长度 mm','尺寸引用与表达式','比例辅助测量','本地检查'],
+            [[r['id'],r['spec'],r.get('length_review',{}).get('status'),r.get('length_review',{}).get('applied'),
+              r.get('length_review',{}).get('before',{}).get('length_mm'),r['length_mm'],r.get('length_review'),
+              r.get('length_estimate'),r.get('length_expert_checks',[])] for r in stage_two['view_members'] if r.get('length_review') or r.get('length_expert_checks')]))
     sheets.extend([
         ('Review History',['阶段','版本','时间','操作','理由'],
          [[h['stage'],h['revision'],h['at'],h['action'],h['reason']] for h in history]),

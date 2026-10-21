@@ -1,4 +1,4 @@
-"""Lossless grid geometry. Pixels locate evidence; they never determine mm."""
+"""Lossless grid geometry. Calibrated measurements remain auxiliary evidence."""
 import hashlib
 import math
 from PIL import Image
@@ -37,6 +37,6 @@ def freeze_grid(directory,view_id,image_path):
                 source.crop(tile['crop_bbox_px']).save(target,dpi=source.info.get('dpi',(300,300)))
             tile['image_file']=filename
     plan.update(input_sha256=digest,source_image=image_path.name,
-                coordinate_definition='像素只用于标签定位与裁片对应，不用于推算毫米；裁片边界不是构件端点。')
+                coordinate_definition='未标定像素只用于标签定位与裁片对应；经引用校准可供辅助测量，不作为确定名义长度依据；裁片边界不是构件端点。')
     write_json(directory/'grids'/f'{view_id}-{digest[:16]}.json',plan)
     return plan

@@ -250,6 +250,8 @@ def create_app(root=ROOT, start_workers=True):
             try:
                 allowed.update(tile['image_file'] for analysis in store.stage(job_id,n)['data'].get('view_analysis',[])
                                for tile in analysis.get('grid_tiles',[]))
+                allowed.update(crop['image_file'] for analysis in store.stage(job_id,n)['data'].get('view_analysis',[])
+                               for crop in analysis.get('length_expert_context_images',[]))
                 allowed.update(v['id']+'.jpg' for v in store.stage(job_id,n)['data'].get('views',[]))
                 allowed.update(v['id']+'_300dpi.png' for v in store.stage(job_id,n)['data'].get('views',[])
                                if v.get('localization') or store.stage(job_id,n)['data'].get('recognition_mode')=='view_ledger')
@@ -264,6 +266,8 @@ def create_app(root=ROOT, start_workers=True):
             if snapshot['stage'] not in (1,2):continue
             allowed.update(tile['image_file'] for analysis in snapshot.get('data',{}).get('view_analysis',[])
                            for tile in analysis.get('grid_tiles',[]))
+            allowed.update(crop['image_file'] for analysis in snapshot.get('data',{}).get('view_analysis',[])
+                           for crop in analysis.get('length_expert_context_images',[]))
             for view in snapshot.get('data',{}).get('views',[]):
                 if view.get('image_file'):allowed.add(view['image_file'])
                 allowed.update(view.get('detail_files',[]))
