@@ -12,6 +12,18 @@ def resolution(identity='r',count=3,allocations=None,**changes):
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_completed_warning_sources_are_not_mislabeled_as_unprocessed(self):
+        two=fixture([row('p1','p'),row('a1','a')])
+        for analysis in two['view_analysis']:
+            analysis['status']='completed_with_warnings'
+        two['view_analysis'][0]['label_count']=4
+        draft=reconcile(two);draft['resolutions']=[resolution()]
+        result=reconcile(two,draft)
+        self.assertEqual(result['totals']['pending_source_views'],0)
+        self.assertEqual(result['totals']['confirmed_single_members'],3)
+        self.assertTrue(any('覆盖疑点' in issue for e in result['exceptions'] for issue in e['issues']))
+        self.assertFalse(any('未完成识别' in issue for e in result['exceptions'] for issue in e['issues']))
+
     def test_confirmed_groups_are_derived_and_source_is_immutable(self):
         two=fixture([row('p1','p'),row('a1','a')]);before=copy.deepcopy(two)
         three=reconcile(two);self.assertEqual(three['summary'],[])

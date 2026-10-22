@@ -12,7 +12,7 @@ from pydantic import Field, StrictInt, field_validator
 
 from .domain import Contract
 from .profiles import section
-from .group_dedup import build_group_review, expand_confirmed_groups
+from .group_dedup import build_group_review, expand_confirmed_groups, COMPLETED_SOURCE_STATES
 from .member_recognition import normalize_view_tags, view_tag, member_key, key_record
 
 
@@ -130,7 +130,7 @@ def reconcile(data,draft=None):
         exceptions.append({'observation_id':pending['view_id'],'member_cnt':None,
                            'issues':[f"来源视图未完成识别：{pending['title']} ({pending['status']})"]})
     for analysis in data.get('view_analysis',[]):
-        if analysis.get('status')!='completed':continue
+        if analysis.get('status') not in COMPLETED_SOURCE_STATES:continue
         labels=analysis.get('label_count')
         if analysis.get('coverage_differences') or (labels is not None and labels!=analysis.get('member_cnt')):
             exceptions.append({'observation_id':analysis['view_id'],'member_cnt':None,

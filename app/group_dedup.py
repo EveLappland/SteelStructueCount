@@ -8,6 +8,8 @@ from .profiles import section
 from .member_recognition import RecognizedMember,normalize_view_tags,view_tag,member_key
 from .view_filter import role
 
+COMPLETED_SOURCE_STATES = {'completed', 'completed_with_warnings', 'empty'}
+
 
 def _identity(key):
     return 'group-'+hashlib.sha256(json.dumps(key,ensure_ascii=False).encode()).hexdigest()[:16]
@@ -68,7 +70,7 @@ def build_group_review(data):
         if group['row_issues']:reasons.append('来源台账含待核验信息')
         for origin in origins:
             state=analysis.get(origin['view_id'])
-            if not state or state.get('status')!='completed':
+            if not state or state.get('status') not in COMPLETED_SOURCE_STATES:
                 reasons.append(f"{origin['view_id']} 未完成识别")
             elif state.get('coverage_differences') or (state.get('label_count') is not None and state['label_count']!=state.get('member_cnt')):
                 reasons.append(f"{origin['view_id']} 存在规格标签覆盖差异")
@@ -127,7 +129,7 @@ def build_group_review(data):
 
     pending_sources=[{'view_id':identity,'title':view['title'],
         'status':analysis.get(identity,{}).get('status','missing')}
-        for identity,view in views.items() if analysis.get(identity,{}).get('status')!='completed']
+        for identity,view in views.items() if analysis.get(identity,{}).get('status') not in COMPLETED_SOURCE_STATES]
     pending_sources.extend({'view_id':p['page_id'],'title':f"{p['file']} 第{p['page']}页",'status':'page_pending'}
         for p in data.get('page_decisions',[]) if p['decision']=='REVIEW'
         or p['decision']=='CONSTRUCTION' and not p.get('view_ids'))

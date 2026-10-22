@@ -129,3 +129,9 @@ node --test tests/*.cjs
 第二阶段默认使用 `LENGTH_REVIEW_MODE=economy`：复用 PDF 文字和已识别台账，一次核验，仅冲突或缺少依据的记录再仲裁。`.env` 中 `LENGTH_REVIEW_MAX_CALLS=2` 限制每视图长度复核请求次数，包含格式及传输失败的重试；网格识图、总代理及第一阶段调用另计。`full` 可恢复原多角色流程，但同样遵守设定的调用上限。修改后需重启服务。
 
 尺寸引用增加原文 `source_ids`、尺寸基准 `baseline_basis`；端点增加 `endpoint_kinds`。程序核对来源及数值，几何对应仍为模型判断；未取得充分依据的记录保留推断或未知状态。事实目录和完整中间记录随证据 ZIP 导出。详见 [长度仲裁设计](docs/automatic-length-arbitration.md)。
+
+## 三阶段自动全量测试
+
+`uv run python tools/run_pipeline_test.py --base http://127.0.0.1:8124 --pdf <文件1.pdf> --pdf <文件2.pdf> --output tmp/full_test`
+
+脚本通过公开接口上传 PDF，自动运行到第三阶段与 Excel/证据包导出，保存各阶段 JSON、请求次数、token 用量、耗时与数量去向检查，不读取参考答案或修改构件。监控断开后用 `--resume-job <任务ID> --output <原输出目录>` 继续，不重新上传或重复付费识图。长度复核预算由服务进程的 `.env` 配置决定；启动测试脚本前应确认服务已加载相同配置。既有 `tools/run_full_test.py` 的 MTO 评分入口保持不变。
