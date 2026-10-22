@@ -80,7 +80,8 @@ class LengthArbitration:
     def __init__(self, item, all_items, assessment, trace, audit, emit):
         self.item = item
         self.rows = deepcopy(item['rows'])
-        self.targets = [r['id'] for r in target_rows(self.rows)]
+        ids = item.get('length_target_ids')
+        self.targets = list(ids) if ids is not None else [r['id'] for r in target_rows(self.rows)]
         self.audit, self.emit = audit, emit
         self.path = trace / item['view']['id'] / 'arbitration'
         self.catalog = {i['view']['id']: i for i in all_items if 'entry' in i}

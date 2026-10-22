@@ -57,7 +57,7 @@ Excel 包含汇总、单根台账、组分配、原始观察、待确认项、�
 
 ### 长度与分段专家
 
-`app/length_expert.py` 管理尺寸引用、原图归一化端点、表达式与本地合入；`app/length_context.py` 生成工作包和无损扩展裁图。专家按视图处理所有 UNKNOWN、UNRESOLVED 和 DIAGONAL，其他台账仅供上下文。一次输出该视图的共享尺寸引用及每个目标的 DIRECT 或 HORIZONTAL/VERTICAL 表达式。标高引用先从米换为毫米；本地按引用加减乘，再计算勾股并保留两位小数。OF SPLICE/标尺只在一处出现时，须说明为什么可用于远处构件；不能只凭规格相同或近似对称套用。
+`app/length_expert.py` 管理尺寸引用、原图归一化端点、表达式与本地合入；`app/length_context.py` 生成工作包和无损扩展裁图。专家按视图核验全部构件，包括已有数值的DIRECT、UNKNOWN、UNRESOLVED和DIAGONAL；已填长度不能绕过核验。一次输出该视图的共享尺寸引用及每个目标的 DIRECT 或 HORIZONTAL/VERTICAL 表达式。标高引用先从米换为毫米；本地按引用加减乘，再计算勾股并保留两位小数。OF SPLICE/标尺只在一处出现时，须说明为什么可用于远处构件；不能只凭规格相同或近似对称套用。
 
 每视图最多两轮：首轮之后只有明确补图请求或本地引用/格式关系错误才追加；补图最多一次，包含目标端部、拼接和远处参考尺寸。普通 UNKNOWN 不触发无限重算。两个角色的语义判断仍可能错误，表达式通过只说明本地引用与算术一致，不声明图形对应已验证。
 
@@ -69,7 +69,7 @@ Excel 包含汇总、单根台账、组分配、原始观察、待确认项、�
 
 `app/length_arbitration.py` 在长度专家后调度三个角色，全部复用 `grid_workflow.py` 的请求队列，和网格/总代理共享 `LLM_MAX_CONCURRENCY`（`.env` 可配置，未设置默认 5，网页显式设置优先）。本地裁图不计API请求并发。
 
-专家只提出候选，不直接覆盖台账。证据调度代理按目标端点、拼接标记和完整尺寸链请求合并高清图，也可请求已上传的其他视图；服务器只接受目录内 view_id，不接受模型提供的文件路径。独立核验代理看完整图与补图，首轮不接收旧长度/端点/专家候选。仲裁代理比较 master、专家及独立核验的证据，可选原候选或重新推导；所有加减乘和勾股仍由本地计算。
+全部构件都进入长度核验，避免原识图漏看拼接却填入了貌似合理的DIRECT值而绕过复核。专家只提出候选，不直接覆盖台账。证据调度代理按目标端点、拼接标记和完整尺寸链请求合并高清图，也可请求已上传的其他视图；服务器只接受目录内 view_id，不接受模型提供的文件路径。独立核验代理看完整图与补图，首轮不接收旧长度/端点/专家候选。仲裁代理比较 master、专家及独立核验的证据，可选原候选或重新推导；所有加减乘和勾股仍由本地计算。
 
 补证/语义修订预算最多两轮，另有有界传输/格式重试。不等待人工，不无限循环。结果标记 SUPPORTED（图示依据支持）、INFERRED（自动选择最佳可用候选）或 UNRESOLVED（无有效长度）；失败降级也保留每根构件与完整标签。推断不是工程确认，不能以消除 UNKNOWN 代替准确率。此版本不增删分段行、不因数量标准强行凑数；跨视图补图用于取证，不直接认定重复。
 
@@ -81,7 +81,7 @@ Excel 包含汇总、单根台账、组分配、原始观察、待确认项、�
 $env:PYTHONUTF8 = '1'
 .\.venv\Scripts\python.exe tools/serve_stage12.py --root tmp/length_expert_feature_server --port 8123
 # 另一窗口执行；--fresh 则重新调用 children/master，不冻结旧结果
-.\.venv\Scripts\python.exe tools/run_length_expert_test.py --source-root tmp/stage12_feature_server --source-job <源任务ID> --root tmp/length_expert_feature_server --max-concurrency 3
+.\.venv\Scripts\python.exe tools/run_length_expert_test.py --source-root tmp/stage12_feature_server --source-job <源任务ID> --root tmp/length_expert_feature_server --max-concurrency 5
 ```
 
 源 master 及其图片指纹经过验证后复制到新任务，原始回答不是人工构造的模拟响应。`acceptance/` 保存前后结果、真实调用/并发、数量身份不变检查和耗时。可选 `--baseline <JSON>`，格式为 `[{"spec":"HEA260","length_mm":6000,"member_cnt":2}]`；所有推理结束后才读取并评分，不发给 API。相同规格与两位小数长度按多重集合比较，不代表实体位置已核对。
@@ -103,7 +103,7 @@ node --test tests/*.cjs
 # 窗口一：独立数据目录，避免与现有服务共享数据库恢复状态
 .\.venv\Scripts\python.exe tools/serve_stage12.py --root tmp/stage12_feature_server --port 8122
 # 窗口二：可重复传入 --pdf，支持任意文件名
-.\.venv\Scripts\python.exe tools/run_stage12_test.py --pdf "C:\path\drawing.pdf" --base http://127.0.0.1:8122 --max-concurrency 3 --output tmp/stage12_test
+.\.venv\Scripts\python.exe tools/run_stage12_test.py --pdf "C:\path\drawing.pdf" --base http://127.0.0.1:8122 --max-concurrency 5 --output tmp/stage12_test
 ```
 
 真实联调经公开上传接口运行，只到第二阶段；报告检查数量标准交付、网格模式、实际 HTTP 并发峰值、来源面补入及第三阶段未执行。它不读取人工正确答案，不改写模型输出，也不宣称准确率。阶段结果、长度专家记录和逐视图数量差异保存在输出目录。

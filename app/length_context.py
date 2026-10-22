@@ -20,7 +20,8 @@ def freeze_context(directory,view_id,image_path,request):
 
 def work_package(item,*,previous=None,feedback=None,round=0):
     plan=item['plan'];directory=item['directory'];rows=item['rows']
-    targets=target_rows(rows)
+    ids=item.get('length_target_ids')
+    targets=[r for r in rows if r['id'] in ids] if ids is not None else target_rows(rows)
     positions={c['candidate_id']:c for child in item.get('located',[]) for c in child['observations']}
     def identity(row):
         return {'member_id':row['id'],'spec':row['spec'],'view_tags':row['view_tags'],
@@ -29,6 +30,7 @@ def work_package(item,*,previous=None,feedback=None,round=0):
                 'original_label_point':row.get('original_label_point')}
     metadata={'stage_one_context':item['context'],'original_size_px':[plan['width_px'],plan['height_px']],
               'grid_tiles':plan['tiles'],'target_members':[{**identity(r),'tasks':[
+                  'VERIFY_NOMINAL_LENGTH_AND_SEGMENTATION_FROM_IMAGE',
                   *(['RESOLVE_UNKNOWN'] if r.get('length_mm') is None else []),
                   *(['VERIFY_DIAGONAL_ENDPOINTS_AND_LEGS'] if (r.get('length_input') or {}).get('method')=='DIAGONAL' else []),
                   *(['RESOLVE_SEGMENTATION'] if r.get('segmentation_status')=='UNRESOLVED' else [])]} for r in targets],

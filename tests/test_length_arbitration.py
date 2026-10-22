@@ -11,6 +11,7 @@ from app.grid_workflow import Task, ledger_rows
 from app.length_arbitration import (ArbitrationResponse, EvidencePlan,
                                     LengthArbitration, candidate, fallback_candidate)
 from app.length_expert import LengthExpertResponse, assess_reply
+from app.length_context import work_package
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,6 +45,20 @@ class ArbitrationContractTests(unittest.TestCase):
         second = candidate('row-q', 'expert', {'method': 'DIRECT', 'direct_mm': 4, 'evidence': 'local fixture'})
         self.assertEqual(fallback_candidate([first, second]), first)
         self.assertIsNone(fallback_candidate([candidate('row-q', 'expert', None)]))
+
+    def test_known_direct_rows_are_reviewed_when_scope_is_all_without_revealing_old_numbers(self):
+        rows = [{'id': 'beam-q', 'spec': 'TEST-PROFILE', 'view_tags': ['PROJECT-Q/DECK'],
+                 'length_mm': 123456, 'length_input': {'method': 'DIRECT', 'direct_mm': 123456},
+                 'endpoints': ['OLD_ENDPOINT'], 'location': 'OLD_LOCATION'}]
+        item = {'rows': rows, 'length_target_ids': ['beam-q'], 'directory': Path('.'),
+                'plan': {'width_px': 10, 'height_px': 10, 'tiles': []},
+                'context': {}, 'entry': {'image_path': 'source.png'}}
+        _, prompt = work_package(item)
+        data = json.loads(prompt.split('输入工作包：\n', 1)[1])
+        self.assertEqual([m['member_id'] for m in data['target_members']], ['beam-q'])
+        self.assertNotIn('123456', prompt)
+        self.assertNotIn('OLD_ENDPOINT', prompt)
+        self.assertNotIn('OLD_LOCATION', prompt)
 
 
 class RecordedArbitrationTests(unittest.TestCase):
@@ -100,6 +115,25 @@ class RecordedArbitrationTests(unittest.TestCase):
 
 
 class RecordedLiveArbitrationTests(unittest.TestCase):
+    def test_export_keeps_final_arbitration_audit_without_advancing_a_job(self):
+        path = ROOT / 'tmp/arbitration_02_test/stage_two.json'
+        if not path.exists():
+            self.skipTest('requires completed real arbitration')
+        from app.group_reconciliation import reconcile_exact
+        from app.pipeline import export
+        from openpyxl import load_workbook
+        data = json.loads(path.read_text(encoding='utf-8'))
+        count = sum(bool(r.get('length_arbitration')) for r in data['view_members'])
+        with tempfile.TemporaryDirectory() as folder:
+            export(Path(folder), data, data, reconcile_exact(data), [], [])
+            book = load_workbook(Path(folder) / 'output/steel_takeoff.xlsx', read_only=True)
+            try:
+                sheet = book['Length Arbitration']
+                self.assertEqual(sheet.max_row, count + 1)
+                self.assertTrue(all('candidates' in str(row[-1]) for row in list(sheet.values)[1:]))
+            finally:
+                book.close()
+
     def test_saved_real_judgments_pass_current_guards_and_preserve_every_source_identity(self):
         folder = ROOT / 'tmp/arbitration_02_test'
         if not (folder / 'report.json').exists():

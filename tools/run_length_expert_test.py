@@ -18,6 +18,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dotenv import load_dotenv
 from app.audit import AuditLog
+from app.ai_concurrency import view_concurrency
 from app.grid_workflow import recognize_views
 from app.native_pdf import write_json
 from app.store import JobStore
@@ -41,10 +42,11 @@ def main():
     parser.add_argument('--source-root',type=Path,required=True)
     parser.add_argument('--source-job',required=True)
     parser.add_argument('--root',type=Path,required=True)
-    parser.add_argument('--max-concurrency',type=int,default=3)
+    parser.add_argument('--max-concurrency',type=int,default=None,help='留空使用.env的LLM_MAX_CONCURRENCY，默认5')
     parser.add_argument('--baseline',type=Path)
     parser.add_argument('--fresh',action='store_true',help='Fresh children/master too, instead of freezing recorded real master output')
     args=parser.parse_args();load_dotenv(ROOT/'.env')
+    args.max_concurrency=view_concurrency({'max_concurrency':args.max_concurrency})
     if not (len(args.source_job)==32 and all(c in '0123456789abcdef' for c in args.source_job)):parser.error('源任务ID无效')
     if args.baseline and not args.baseline.is_file():parser.error('找不到基准文件；不会调用API')
     args.source_root=args.source_root.resolve();args.root=args.root.resolve()

@@ -17,7 +17,7 @@ from .domain import StageTwo
 from .grid_contracts import GridChildResponse,GridMasterResponse
 from .grid_layout import freeze_grid
 from .grid_validation import assess_master
-from .length_expert import LengthExpertResponse,target_rows,assess_reply
+from .length_expert import LengthExpertResponse,assess_reply
 from .length_context import work_package,freeze_context
 from .length_arbitration import LengthArbitration,CONTRACTS,MAX_EVIDENCE_ROUNDS
 from .member_recognition import validate_rows,validate_ledger
@@ -119,6 +119,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         'max_master_repairs':MAX_MASTER_REPAIRS,'max_format_retries':MAX_FORMAT_RETRIES,
         'unknown_length_specialist':True,'length_expert':True,'max_length_rounds':2,
         'automatic_length_arbitration':True,'max_arbitration_evidence_rounds':MAX_EVIDENCE_ROUNDS,
+        'length_review_scope':'all_members',
         'scale_mode':'auxiliary_only','master_input_mode':'recorded_real_output' if recorded_masters is not None else 'grid_requests'}).model_dump()
     result['warnings']=[]
     folder=directory/'responses'/f'attempt-grid-{uuid.uuid4().hex}'
@@ -207,8 +208,11 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         write_json(trace/item['view']['id']/'assessment.json',{'structure':assessment,'quantity':quantity})
         for row in rows:audit.event('VIEW_MEMBER_RECOGNIZED',**row)
         emit(f"总代理完成：{item['view']['title']}，{len(rows)} 条记录；第一阶段数量标准 {quantity['expected_total']}。")
-        if target_rows(rows):
-            item['status']['length_expert']={'status':'queued','target_count':len(target_rows(rows))}
+        # A plausible DIRECT value can still be based on a missed splice or a
+        # wrong endpoint. Numeric presence is not a reason to bypass review.
+        item['length_target_ids']=[r['id'] for r in rows]
+        if rows:
+            item['status']['length_expert']={'status':'queued','target_count':len(rows)}
             entry,prompt=work_package(item)
             queue.appendleft(Task(item['view']['id'],'length_expert',entry,prompt))
         else:item['status']['length_expert']={'status':'skipped','target_count':0}
@@ -217,7 +221,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         item['status'].update(status='completed_with_warnings',model_calls=item['calls'])
         item['status']['length_expert'].update(status='failed',error=message)
         item['warnings'].append(f"{item['view']['title']}：长度专家失败，保留总代理台账；{message}")
-        for row in target_rows(item['rows']):row['length_expert_checks']=['长度专家调用失败，原长度与问题保留。']
+        for row in item['rows']:row['length_expert_checks']=['长度专家调用失败，原长度与问题保留。']
         audit.event('LENGTH_EXPERT_FAILED',view_id=item['view']['id'],error=message)
         begin_arbitration(item,None)
 
@@ -234,7 +238,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
 
     def expert_completed(item,payload,task):
         size=[item['plan']['width_px'],item['plan']['height_px']]
-        assessment=assess_reply(payload,item['rows'],size)
+        assessment=assess_reply(payload,item['rows'],size,target_ids=item['length_target_ids'])
         expert_path=trace/item['view']['id']/'length_expert'
         write_json(expert_path/f'round{task.round:02d}_assessment.json',assessment)
         need_context=payload.get('context_request')
