@@ -45,6 +45,9 @@ class ArbitrationContractTests(unittest.TestCase):
         second = candidate('row-q', 'expert', {'method': 'DIRECT', 'direct_mm': 4, 'evidence': 'local fixture'})
         self.assertEqual(fallback_candidate([first, second]), first)
         self.assertIsNone(fallback_candidate([candidate('row-q', 'expert', None)]))
+        # Local decision policy, not a fabricated model reply: an authoritative
+        # rejection may not be overridden simply because a prior number exists.
+        self.assertIsNone(fallback_candidate([first, second], rejected=True))
 
     def test_known_direct_rows_are_reviewed_when_scope_is_all_without_revealing_old_numbers(self):
         rows = [{'id': 'beam-q', 'spec': 'TEST-PROFILE', 'view_tags': ['PROJECT-Q/DECK'],

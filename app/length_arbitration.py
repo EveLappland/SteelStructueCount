@@ -57,13 +57,15 @@ def candidate(identity, role, length_input, *, resolution=None, references=None,
             'selectable': value is not None and not errors and not checks}
 
 
-def fallback_candidate(candidates):
+def fallback_candidate(candidates, *, rejected=False):
     """Deterministic degraded delivery, explicitly INFERRED, never confirmed.
 
     Prefer inspectable endpoints/references and agreement by independent roles;
     repeated replies from one role do not create extra votes. Ties preserve
     earlier candidates rather than granting an expert an authority advantage.
     """
+    if rejected:
+        return None
     valid = [c for c in candidates if c['selectable']]
     def rank(value):
         resolution = value.get('resolution') or {}
@@ -267,6 +269,7 @@ class LengthArbitration:
             verdict = single[0] if len(single) == 1 else None
             errors = [f for f in self.feedback if f.get('member_id') in (None, identity)]
             valid = verdict is not None and not errors
+            rejected = valid and verdict['decision'] == 'UNRESOLVED'
             chosen = None
             update = assessment['updates'].get(identity) if assessment else None
             if valid and update and update['length_input'] and not update['errors'] and verdict['decision'] != 'UNRESOLVED':
@@ -281,7 +284,7 @@ class LengthArbitration:
             if not chosen:
                 # Automatic delivery even if the judge failed. These are
                 # explicitly inferred fallbacks, never silently confirmed.
-                chosen = fallback_candidate(candidates)
+                chosen = fallback_candidate(candidates, rejected=rejected)
             before = row.get('length_mm')
             if chosen:
                 row['length_input'] = deepcopy(chosen['length_input'])
@@ -292,6 +295,14 @@ class LengthArbitration:
                 row['segmentation_status'] = 'CONFIRMED' if decision == 'SUPPORTED' else row.get('segmentation_status', 'UNRESOLVED')
             else:
                 decision = 'UNRESOLVED'
+                if rejected:
+                    # A valid judge rejection must not resurrect an earlier
+                    # numeric guess via the delivery fallback. Keep that guess
+                    # only in candidates/before, not in the deduplication key.
+                    row['length_mm'] = None
+                    row['length_input'] = {'method': 'UNKNOWN', 'direct_mm': None,
+                        'horizontal_mm': None, 'vertical_mm': None, 'evidence': verdict['reason'][:1000]}
+                    row['length_formula'] = 'unknown'
             row['length_expert_checks'] = [] if decision == 'SUPPORTED' else [
                 '长度自动仲裁：采用证据最充分的推断候选。' if chosen else '长度自动仲裁未取得有效尺寸；构件保留，长度未知。']
             row['length_arbitration'] = {'status': decision,
@@ -301,7 +312,7 @@ class LengthArbitration:
                 'before_mm': before, 'after_mm': row.get('length_mm'),
                 'automatic': True, 'manual_required': False,
                 'note': '本地校验只证明引用与计算一致；视觉对应由模型判断。'}
-            row['length_review'] = {'status': decision, 'applied': chosen is not None,
+            row['length_review'] = {'status': decision, 'applied': chosen is not None or (rejected and before is not None),
                 'before': {k: deepcopy(next(r for r in self.rows if r['id'] == identity).get(k))
                            for k in ('length_mm', 'length_input', 'endpoints', 'issue', 'segmentation_status')},
                 'resolution': chosen.get('resolution') if chosen else None,
