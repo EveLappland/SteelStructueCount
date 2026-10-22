@@ -9,7 +9,7 @@ from unittest.mock import patch
 from app.ai_concurrency import view_concurrency
 from app.grid_workflow import Task, ledger_rows
 from app.length_arbitration import (ArbitrationResponse, EvidencePlan,
-                                    LengthArbitration, candidate, fallback_candidate)
+                                    LengthArbitration, candidate, fallback_candidate, evidence_reference_checks)
 from app.length_expert import LengthExpertResponse, assess_reply
 from app.length_context import work_package
 
@@ -17,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ArbitrationContractTests(unittest.TestCase):
+    def test_text_facts_can_accompany_images_but_not_replace_or_invent_them(self):
+        images={'original','tile-q'};facts={'page-q:text-7'}
+        self.assertEqual(evidence_reference_checks(['tile-q','page-q:text-7'],images,facts,supported=True),[])
+        self.assertEqual([e['check'] for e in evidence_reference_checks(['page-q:text-7'],images,facts,supported=True)],['missing_visual_evidence'])
+        self.assertEqual([e['check'] for e in evidence_reference_checks(['original','invented'],images,facts,supported=True)],['image_reference'])
     def test_env_limit_and_explicit_override_and_five_default(self):
         with patch.dict('os.environ', {}, clear=True):
             self.assertEqual(view_concurrency(), 5)

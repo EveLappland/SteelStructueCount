@@ -135,3 +135,7 @@ node --test tests/*.cjs
 `uv run python tools/run_pipeline_test.py --base http://127.0.0.1:8124 --pdf <文件1.pdf> --pdf <文件2.pdf> --output tmp/full_test`
 
 脚本通过公开接口上传 PDF，自动运行到第三阶段与 Excel/证据包导出，保存各阶段 JSON、请求次数、token 用量、耗时与数量去向检查，不读取参考答案或修改构件。监控断开后用 `--resume-job <任务ID> --output <原输出目录>` 继续，不重新上传或重复付费识图。长度复核预算由服务进程的 `.env` 配置决定；启动测试脚本前应确认服务已加载相同配置。既有 `tools/run_full_test.py` 的 MTO 评分入口保持不变。
+
+若仅修复本地裁决落账规则，可用 `tools/replay_length_finalization.py --source-root <源服务根目录> --source-job <已完成任务ID> --root <服务根目录>`，统一重放所有视图保存的真实裁决，生成新任务后重新去重导出，不新增模型调用。脚本校验图片指纹及构件身份，保留原任务，不接收人工候选或参考答案。`evidence_ids` 允许真实 PDF 文字与实际发送图像共同引用；文字不能替代图像，未知 ID 仍拒绝。
+
+独立运行 `tools/judge.py` 评分另需 `uv pip install "pandas>=2,<4"`；评分在全部推理结束后执行，不向后端发送基准。

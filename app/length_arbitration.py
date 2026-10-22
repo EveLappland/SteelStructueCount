@@ -48,6 +48,15 @@ CONTRACTS = {'length_evidence': EvidencePlan,
              'length_arbiter': ArbitrationResponse}
 
 
+def evidence_reference_checks(ids,image_ids,fact_ids,*,supported):
+    checks=[]
+    if not set(ids)<=set(image_ids)|set(fact_ids):
+        checks.append({'check':'image_reference','message':'evidence_ids必须属于本次实际发送的图像或原始PDF文字目录。'})
+    if supported and not set(ids)&set(image_ids):
+        checks.append({'check':'missing_visual_evidence','message':'SUPPORTED裁决必须指出实际发送的图像证据，文字ID不能替代图像。'})
+    return checks
+
+
 def candidate(identity, role, length_input, *, resolution=None, references=None, errors=None):
     parsed = LengthInput.model_validate(length_input) if length_input else None
     value, formula, checks = calculate_length(parsed) if parsed else (None, 'unknown', [])
@@ -191,6 +200,11 @@ class LengthArbitration:
                     info['image_number'] = index
                 entry['detail_paths'] = [path for _, path in pairs]
         metadata['length_call_budget'] = self.item.get('length_policy', {})
+        for info in metadata['image_map']:
+            info['evidence_id'] = info.get('evidence_id') or info.get('tile_id') or ('original' if info['role']=='original' else info['image_file'])
+        self.sent_image_ids = {i['evidence_id'] for i in metadata['image_map']}
+        metadata['allowed_evidence_ids'] = {'images': sorted(self.sent_image_ids),
+            'pdf_text': [f['id'] for f in self.item.get('drawing_facts', {}).get('facts', [])]}
         prompt = (Path(__file__).parent / 'prompts' / f'{kind}.md').read_text(encoding='utf-8')
         self.save(f'{kind}_input{self.round:02d}.json', metadata)
         return kind, entry, prompt + '\n输入工作包：\n' + json.dumps(metadata, ensure_ascii=False)
@@ -289,18 +303,16 @@ class LengthArbitration:
             feedback.append({'check': 'verdict_coverage', 'message': 'verdicts必须对每个目标ID恰好返回一次。'})
         image_ids = {'original', *[t['id'] for t in self.item['plan']['tiles']],
                      *[i['evidence_id'] for i in self.images]}
+        image_ids = getattr(self, 'sent_image_ids', image_ids)
+        fact_ids = {f['id'] for f in self.item.get('drawing_facts', {}).get('facts', [])}
         for verdict in payload['verdicts']:
             candidates = self.candidates.get(verdict['member_id'], [])
             selected = verdict['selected_candidate_id']
             if selected and not any(c['candidate_id'] == selected and c['selectable'] for c in candidates):
                 feedback.append({'check': 'candidate_scope', 'member_id': verdict['member_id'],
                                  'message': '只能选择属于本目标且通过本地长度校验的候选，或以null表示重新推导。'})
-            if not set(verdict['evidence_ids']) <= image_ids:
-                feedback.append({'check': 'image_reference', 'member_id': verdict['member_id'],
-                                 'message': 'evidence_ids只能引用original、输入tile ID或E编号。'})
-            if verdict['decision'] == 'SUPPORTED' and not verdict['evidence_ids']:
-                feedback.append({'check': 'missing_visual_evidence', 'member_id': verdict['member_id'],
-                                 'message': 'SUPPORTED裁决必须指出图像证据。'})
+            feedback += [{'member_id':verdict['member_id'],**check} for check in evidence_reference_checks(
+                verdict['evidence_ids'],image_ids,fact_ids,supported=verdict['decision']=='SUPPORTED')]
             results = [r for r in payload['results'] if r['member_id'] == verdict['member_id']]
             if verdict['decision'] == 'SUPPORTED' and (len(results) != 1 or results[0]['status'] != 'CONFIRMED'):
                 feedback.append({'check': 'unsupported_final_expression', 'member_id': verdict['member_id'],

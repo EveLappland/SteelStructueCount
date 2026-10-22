@@ -15,7 +15,7 @@
 - decision=SUPPORTED：图示端点、尺寸对应有充分依据，必须在results给出可本地计算的完整表达式，并列图像evidence_ids。
 - decision=INFERRED：证据尚不充分，但从现有候选中选择最有依据的可用结果；说明推断与未消除的歧义。可给有依据的表达式，或者选择有效candidate并返回UNKNOWN结果。
 - decision=UNRESOLVED：确实无可用长度依据，选择null且结果UNKNOWN；不能为了填满表格编造尺寸。整个流程仍自动输出保留该构件的完整台账。
-- evidence_ids：original、输入中的tile_id或E编号，不能编造。reason简短说明决定性图示依据及其他解释为何不成立；不输出冗长讨论过程。
+- evidence_ids：allowed_evidence_ids 中的真实图像或PDF文字ID，不能编造；SUPPORTED至少引用一张本次发送的图像，PDF文字ID不能替代图像。reason简短说明决定性图示依据及其他解释为何不成立；不输出冗长讨论过程。
 
 references/results格式：references=[{id,kind:DIMENSION/LEVEL/OFFSET,axis:X/Y,value_mm,start:{name,point:[x,y]}或null,end:同上或null,evidence}]。引用必须是图示原始尺寸/标高/偏移，不能把推算结果冒充原始值。LEVEL米转毫米，允许只有start。结果={member_id,status:CONFIRMED/ESTIMATED/UNRESOLVED/CONFLICT,method:DIRECT/DIAGONAL/UNKNOWN,endpoints:[{name,point},{name,point}]或null,components:[{direction,terms:[{reference_id,factor}],basis}],reference_ids,issue}。CONFIRMED需要两个不同真实端点和有效引用。DIRECT只一个DIRECT表达式，DIAGONAL分别HORIZONTAL与VERTICAL各一个。直角边、加减乘与勾股由本地计算，禁止输出自己算的斜边。其余status必须UNKNOWN且components=[]。比例测量仅辅助，不冒充图示尺寸。
 

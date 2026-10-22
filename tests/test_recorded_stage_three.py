@@ -11,6 +11,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RecordedStageThreeTests(unittest.TestCase):
+    def test_real_reply_replay_changes_only_automatic_lengths_not_member_identity(self):
+        old=ROOT/'tmp/full_economy_02_05/stage_2.json'
+        new=ROOT/'tmp/full_economy_02_05_repaired/stage_2.json'
+        if not old.is_file() or not new.is_file():
+            self.skipTest('requires completed real economy run and deterministic replay')
+        before=json.loads(old.read_text(encoding='utf-8'))
+        after=json.loads(new.read_text(encoding='utf-8'))
+        identities=lambda d:[(r['id'],r['spec'],r['member_cnt'],r['view_tags'],r['source_view']) for r in d['view_members']]
+        self.assertEqual(identities(before),identities(after))
+        originals={r['id']:r for r in before['view_members']}
+        for row in after['view_members']:
+            if originals[row['id']]['length_mm']!=row['length_mm']:
+                self.assertEqual(row['length_arbitration']['final_expression']['role'],'arbiter')
+                self.assertTrue(row['length_arbitration']['automatic'])
+        report=json.loads((new.parent/'report.json').read_text(encoding='utf-8'))
+        self.assertEqual(report['requests_by_stage'],{})
+        self.assertTrue(report['checks']['no_manual_edits'])
+        self.assertTrue(report['checks']['all_observations_accounted_for'])
+
     def test_exact_reconciliation_preserves_keys_sources_and_accounts_for_unknowns(self):
         files = [ROOT / 'tmp/arbitration_02_test/stage_two.json',
                  ROOT / 'tmp/arbitration_04_all_review/stage_two.json']

@@ -7,6 +7,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from dataclasses import dataclass,replace
 import json
+import hashlib
 from pathlib import Path
 import time
 import uuid
@@ -40,6 +41,7 @@ class Task:
     tile_id: str = ''
     round: int = 0
     format_retry: int = 0
+    base_prompt: str = ''
 
     @property
     def name(self):
@@ -48,6 +50,18 @@ class Task:
 
     @property
     def contract(self):return {'child':GridChildResponse,'master':GridMasterResponse,'length_expert':LengthExpertResponse,**CONTRACTS}[self.kind]
+
+
+def format_retry_task(task,error,answer):
+    """Do not feed a truncated/malformed ledger back as a new answer template."""
+    base=task.base_prompt or task.prompt
+    text=answer or ''
+    feedback={'error':error[:2400],'previous_reply_chars':len(text),
+              'previous_reply_sha256':hashlib.sha256(text.encode('utf-8')).hexdigest(),
+              'note':'完整错误回复已保存日志；不作为本轮答案模板。请从原始图片与输入重新返回完整、符合schema的JSON。'}
+    prompt=base+'\n格式或传输错误（不是新增图纸事实）：\n'+json.dumps(feedback,ensure_ascii=False)
+    prompt+='\n不增加额外字段，不为修复格式改变数量或猜长度。不要复制旧的错误JSON结构。'
+    return replace(task,prompt=prompt,base_prompt=base,format_retry=task.format_retry+1)
 
 
 def prompt_file(name):return (Path(__file__).parent/'prompts'/name).read_text(encoding='utf-8')
@@ -325,10 +339,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
                 if answer is not None:audit.text(trace/task.view_id/'answers'/f'{task.name}.reply.txt',answer)
                 if 'error' in reply:
                     if task.format_retry<MAX_FORMAT_RETRIES:
-                        feedback={'error':reply['error'],'previous_reply':answer}
-                        prompt=task.prompt+'\n本次请求未通过解析或传输，以下是本地错误和不可信的旧回复：\n'+json.dumps(feedback,ensure_ascii=False)
-                        prompt+='\n请结合原图片重新返回完整JSON，严格遵循schema，不增加额外字段（null也不允许），不能为修复格式改变图中数量或猜长度。'
-                        queue.appendleft(replace(task,prompt=prompt,format_retry=task.format_retry+1))
+                        queue.appendleft(format_retry_task(task,reply['error'],answer))
                         audit.event('GRID_FORMAT_RETRY',view_id=task.view_id,task=task.name,error=reply['error'])
                         label=task.tile_id if task.kind=='child' else {'length_expert':'长度专家','length_evidence':'证据调度','length_verifier':'独立核验','length_arbiter':'自动仲裁'}.get(task.kind,'总代理')
                         emit(f"格式/请求重试：{item['view']['title']} {label}；其他有效回复保留。")
