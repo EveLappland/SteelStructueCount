@@ -9,7 +9,7 @@ from unittest.mock import patch
 from app.ai_concurrency import view_concurrency
 from app.grid_workflow import Task, ledger_rows
 from app.length_arbitration import (ArbitrationResponse, EvidencePlan,
-                                    LengthArbitration, candidate)
+                                    LengthArbitration, candidate, fallback_candidate)
 from app.length_expert import LengthExpertResponse, assess_reply
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +38,12 @@ class ArbitrationContractTests(unittest.TestCase):
         self.assertTrue(result['selectable'])
         self.assertFalse(candidate('row-q', 'expert', None)['selectable'])
         self.assertFalse(candidate('row-q', 'expert', result['length_input'], errors=['bad reference'])['selectable'])
+
+    def test_fallback_is_deterministic_and_does_not_grant_expert_authority(self):
+        first = candidate('row-q', 'master', {'method': 'DIRECT', 'direct_mm': 3, 'evidence': 'local fixture'})
+        second = candidate('row-q', 'expert', {'method': 'DIRECT', 'direct_mm': 4, 'evidence': 'local fixture'})
+        self.assertEqual(fallback_candidate([first, second]), first)
+        self.assertIsNone(fallback_candidate([candidate('row-q', 'expert', None)]))
 
 
 class RecordedArbitrationTests(unittest.TestCase):
@@ -91,3 +97,37 @@ class RecordedArbitrationTests(unittest.TestCase):
         checked = assess_reply(payload, self.rows, [self.plan['width_px'], self.plan['height_px']], target_ids=[identity])
         self.assertEqual(checked['missing'], [])
         self.assertFalse(any(f['check'] == 'target_coverage' for f in checked['feedback']))
+
+
+class RecordedLiveArbitrationTests(unittest.TestCase):
+    def test_saved_real_judgments_pass_current_guards_and_preserve_every_source_identity(self):
+        folder = ROOT / 'tmp/arbitration_02_test'
+        if not (folder / 'report.json').exists():
+            self.skipTest('requires completed live API arbitration, not a fake response')
+        run = json.loads((folder / 'report.json').read_text(encoding='utf-8'))
+        one = json.loads((folder / 'stage_one.json').read_text(encoding='utf-8'))
+        two = json.loads((folder / 'stage_two.json').read_text(encoding='utf-8'))
+        root = ROOT / 'tmp/arbitration_feature_server/data/jobs' / run['job_id']
+        from app.member_recognition import key_record, validate_ledger
+        validated = validate_ledger(deepcopy(two))
+        for row in validated['view_members']:
+            self.assertEqual(row['member_key'], key_record(row))
+            self.assertIn(row['source_plane_tag'], row['view_tags'])
+        for analysis in two['view_analysis']:
+            trace = root / analysis['trace_file']
+            view = next(v for v in one['views'] if v['id'] == analysis['view_id'])
+            rows = ledger_rows(json.loads((trace / 'master_result.json').read_text(encoding='utf-8')), view, one, [])
+            final = [r for r in validated['view_members'] if r['source_view'] == view['id']]
+            self.assertEqual([(r['id'], r['spec'], r['member_cnt'], r['view_tags']) for r in rows],
+                             [(r['id'], r['spec'], r['member_cnt'], r['view_tags']) for r in final])
+            saved = json.loads((trace / 'arbitration/result.json').read_text(encoding='utf-8'))
+            obj = object.__new__(LengthArbitration)
+            obj.targets = list(json.loads((trace / 'arbitration/candidates_initial.json').read_text(encoding='utf-8')))
+            obj.candidates = {r['id']: r['length_arbitration']['candidates'] for r in final if r.get('length_arbitration')}
+            obj.images = json.loads((trace / 'arbitration/evidence_images.json').read_text(encoding='utf-8'))
+            obj.item = {'plan': json.loads((trace / 'input.json').read_text(encoding='utf-8'))['grid']}
+            self.assertEqual(obj.check_verdicts(saved['verdict']), [])
+            for row in final:
+                if row.get('length_arbitration'):
+                    self.assertEqual(row['length_arbitration'],
+                        next(r for r in validated['view_members'] if r['id'] == row['id'])['length_arbitration'])
