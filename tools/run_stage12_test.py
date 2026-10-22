@@ -10,6 +10,12 @@ import json
 from pathlib import Path
 import time
 import httpx
+import sys
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from dotenv import load_dotenv
+from app.ai_concurrency import view_concurrency
 
 
 def write(path,data):
@@ -21,10 +27,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base',default='http://127.0.0.1:8122')
     parser.add_argument('--pdf',type=Path,action='append',default=[])
-    parser.add_argument('--max-concurrency',type=int,default=3)
+    parser.add_argument('--max-concurrency',type=int,default=None,help='留空使用.env的LLM_MAX_CONCURRENCY，默认5')
     parser.add_argument('--resume-job')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
+    load_dotenv(ROOT/'.env')
+    args.max_concurrency=view_concurrency({'max_concurrency':args.max_concurrency})
     if not args.resume_job and (not args.pdf or not all(p.is_file() for p in args.pdf)):
         parser.error('指定存在的 --pdf 文件，或者 --resume-job')
     # Local test traffic must not be routed through the user's API proxy.
@@ -86,7 +94,8 @@ def main():
         'request_limit_respected':peak<=args.max_concurrency,
         'source_planes_preserved':all(r['source_plane_tag'] in r['view_tags'] for r in two['view_members']),
         'grid_mode_used':two.get('recognition_strategy')=='grid_agents',
-        'length_expert_finished':all((a.get('length_expert') or {}).get('status') in ('completed','completed_with_warnings','skipped') for a in two['view_analysis']) if two.get('grid_configuration',{}).get('length_expert') else not report['unknown_specialist_called']}
+        'length_expert_finished':all((a.get('length_expert') or {}).get('status') in ('completed','completed_with_warnings','failed','skipped') for a in two['view_analysis']) if two.get('grid_configuration',{}).get('length_expert') else not report['unknown_specialist_called'],
+        'automatic_arbitration_finished':all((a.get('length_arbitration') or {}).get('status') in ('completed','completed_with_warnings') for a in two['view_analysis'] if (a.get('length_expert') or {}).get('target_count',0)>0) if two.get('grid_configuration',{}).get('automatic_length_arbitration') else True}
     write(args.output/'report.json',report)
     lines=['# 第一、二阶段真实 API 联调','',f"任务：{report['url']}",'',
         f"第一阶段 {durations['1']:.2f} 秒；第二阶段 {durations['2']:.2f} 秒。",

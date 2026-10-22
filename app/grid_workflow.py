@@ -17,8 +17,9 @@ from .domain import StageTwo
 from .grid_contracts import GridChildResponse,GridMasterResponse
 from .grid_layout import freeze_grid
 from .grid_validation import assess_master
-from .length_expert import LengthExpertResponse,target_rows,assess_reply,apply_reply
+from .length_expert import LengthExpertResponse,target_rows,assess_reply
 from .length_context import work_package,freeze_context
+from .length_arbitration import LengthArbitration,CONTRACTS,MAX_EVIDENCE_ROUNDS
 from .member_recognition import validate_rows,validate_ledger
 from .native_pdf import write_json
 from .quantity_reference import assess_quantity
@@ -45,7 +46,7 @@ class Task:
         return f'{self.view_id}_{phase}_format{self.format_retry:02d}'
 
     @property
-    def contract(self):return {'child':GridChildResponse,'master':GridMasterResponse,'length_expert':LengthExpertResponse}[self.kind]
+    def contract(self):return {'child':GridChildResponse,'master':GridMasterResponse,'length_expert':LengthExpertResponse,**CONTRACTS}[self.kind]
 
 
 def prompt_file(name):return (Path(__file__).parent/'prompts'/name).read_text(encoding='utf-8')
@@ -117,6 +118,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         'request_concurrency':limit,'trigger_px':2200,'target_core_px':1800,'overlap_px':240,
         'max_master_repairs':MAX_MASTER_REPAIRS,'max_format_retries':MAX_FORMAT_RETRIES,
         'unknown_length_specialist':True,'length_expert':True,'max_length_rounds':2,
+        'automatic_length_arbitration':True,'max_arbitration_evidence_rounds':MAX_EVIDENCE_ROUNDS,
         'scale_mode':'auxiliary_only','master_input_mode':'recorded_real_output' if recorded_masters is not None else 'grid_requests'}).model_dump()
     result['warnings']=[]
     folder=directory/'responses'/f'attempt-grid-{uuid.uuid4().hex}'
@@ -217,6 +219,18 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         item['warnings'].append(f"{item['view']['title']}：长度专家失败，保留总代理台账；{message}")
         for row in target_rows(item['rows']):row['length_expert_checks']=['长度专家调用失败，原长度与问题保留。']
         audit.event('LENGTH_EXPERT_FAILED',view_id=item['view']['id'],error=message)
+        begin_arbitration(item,None)
+
+    def schedule_arbitration(item,request):
+        if request is None:
+            item['rows']=validate_rows(item['rows'],item['view'],one)
+            return
+        kind,entry,prompt=request
+        queue.appendleft(Task(item['view']['id'],kind,entry,prompt,round=item['arbiter'].round))
+
+    def begin_arbitration(item,assessment):
+        item['arbiter']=LengthArbitration(item,prepared,assessment,trace,audit,emit)
+        schedule_arbitration(item,item['arbiter'].start())
 
     def expert_completed(item,payload,task):
         size=[item['plan']['width_px'],item['plan']['height_px']]
@@ -235,19 +249,18 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
             return
         if need_context:
             assessment['feedback'].append({'check':'context_budget','message':'扩展上下文已达一次上限；未解决记录及补图请求保留，不继续循环。'})
-        revised,changes=apply_reply(item['rows'],assessment)
-        item['rows']=validate_rows(revised,item['view'],one)
         expert_status=item['status']['length_expert']
-        expert_status.update(status='completed_with_warnings' if assessment['feedback'] or any(not c['applied'] for c in changes) else 'completed',
-            rounds=task.round+1,applied_count=sum(c['applied'] for c in changes),changed_count=sum(c['applied'] and c['before_mm']!=c['after_mm'] for c in changes),
+        expert_status.update(status='completed_with_warnings' if assessment['feedback'] else 'completed',
+            rounds=task.round+1,applied_count=0,changed_count=0,candidate_count=len(assessment['updates']),
             unknown_remaining=sum(r['length_mm'] is None for r in item['rows']),calibration=assessment['calibration'],
-            feedback=assessment['feedback'],changes=changes)
+            feedback=assessment['feedback'],changes=[],application_mode='candidates_pending_automatic_arbitration')
         item['status'].update(status='completed_with_warnings' if expert_status['status']=='completed_with_warnings' or item['status'].get('remaining_checks') else 'completed',
                              model_calls=item['calls'])
         if assessment['feedback']:item['warnings'].append(f"{item['view']['title']}：长度专家仍有 {len(assessment['feedback'])} 项本地检查问题；原台账和有效修订保留。")
-        write_json(expert_path/'result.json',payload);write_json(expert_path/'changes.json',changes)
-        for change in changes:audit.event('LENGTH_RESULT_APPLIED' if change['applied'] else 'LENGTH_RESULT_RETAINED',view_id=task.view_id,**change)
-        emit(f"长度专家完成：{item['view']['title']}，合入 {expert_status['applied_count']} 条，未知长度剩余 {expert_status['unknown_remaining']} 条。")
+        write_json(expert_path/'result.json',payload)
+        audit.event('LENGTH_CANDIDATES_READY',view_id=task.view_id,count=len(assessment['updates']),applied=False)
+        emit(f"长度专家完成：{item['view']['title']}，提出 {len(assessment['updates'])} 条候选；开始独立核验与自动仲裁，尚未覆盖台账。")
+        begin_arbitration(item,assessment)
 
     audit.event('GRID_BATCH_STARTED',configured_concurrency=limit,views=len(prepared),grid_requests=len(queue),
                 reason='网格、总代理、长度专家和重试共用一个就绪队列与线程池，无嵌套线程池。')
@@ -262,13 +275,14 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         adopt(item,payload,assessment,quantity,0,assessment['feedback']+quantity['feedback'])
     emit(f"第二阶段网格识图：{len(prepared)} 个视图，{sum(len(i['plan']['tiles']) for i in prepared if 'plan' in i)} 个网格，共享请求并发上限 {limit}。")
     checkpoint()
-    with ThreadPoolExecutor(max_workers=min(limit,len(queue)) or 1,thread_name_prefix='steel-grid') as executor:
+    with ThreadPoolExecutor(max_workers=limit,thread_name_prefix='steel-grid') as executor:
         while queue or pending:
             dispatched=False
             while queue and len(pending)<limit:
                 task=queue.popleft();item=by_id[task.view_id]
                 item['calls']+=1;item['status']['model_calls']=item['calls']
-                item['status']['status']={'child':'recognizing_grids','master':'coordinating','length_expert':'checking_lengths'}[task.kind]
+                item['status']['status']={'child':'recognizing_grids','master':'coordinating','length_expert':'checking_lengths',
+                    'length_evidence':'gathering_length_evidence','length_verifier':'verifying_lengths','length_arbiter':'arbitrating_lengths'}[task.kind]
                 if task.kind=='length_expert':item['status']['length_expert'].update(status='running',round=task.round+1)
                 future=executor.submit(request,task);pending[future]=task
                 dispatched=True
@@ -290,11 +304,13 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
                         prompt+='\n请结合原图片重新返回完整JSON，严格遵循schema，不增加额外字段（null也不允许），不能为修复格式改变图中数量或猜长度。'
                         queue.appendleft(replace(task,prompt=prompt,format_retry=task.format_retry+1))
                         audit.event('GRID_FORMAT_RETRY',view_id=task.view_id,task=task.name,error=reply['error'])
-                        label=task.tile_id if task.kind=='child' else '长度专家' if task.kind=='length_expert' else '总代理'
+                        label=task.tile_id if task.kind=='child' else {'length_expert':'长度专家','length_evidence':'证据调度','length_verifier':'独立核验','length_arbiter':'自动仲裁'}.get(task.kind,'总代理')
                         emit(f"格式/请求重试：{item['view']['title']} {label}；其他有效回复保留。")
                         continue
                     if task.kind=='child':item['child_errors'][task.tile_id]=reply['error']
                     elif task.kind=='length_expert':expert_failed(item,reply['error'])
+                    elif task.kind in CONTRACTS:
+                        schedule_arbitration(item,item['arbiter'].failed(task.kind,reply['error']))
                     else:fail(item,reply['error'])
                 else:
                     payload=task.contract.model_validate(reply['payload']).model_dump(mode='json')
@@ -303,6 +319,10 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
                     elif task.kind=='length_expert':
                         try:expert_completed(item,payload,task)
                         except Exception as error:expert_failed(item,audit.scrub(str(error)))
+                    elif task.kind in CONTRACTS:
+                        try:schedule_arbitration(item,item['arbiter'].accept(task.kind,payload))
+                        except Exception as error:
+                            schedule_arbitration(item,item['arbiter'].failed(task.kind,audit.scrub(str(error))))
                     else:
                         assessment=assess_master({'view':{'plane_name':item['context']['current_view_tag']},**payload},item['located'],item['plan']['tiles'])
                         quantity=assess_quantity(payload['members'],item['view'].get('quantity_reference'))

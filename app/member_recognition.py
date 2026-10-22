@@ -218,7 +218,7 @@ def validate_rows(rows, view, stage_one):
                           if raw.get('legacy_basis') or raw.get('basis') else {}),
                        'checks': list(dict.fromkeys(issues)), 'review_status': 'pending_review',
                        **{name:raw[name] for name in ('candidate_ids','segmentation_status','endpoints','original_label_point','grid_checks',
-                           'length_review','length_estimate','length_expert_checks') if name in raw}})
+                           'length_review','length_estimate','length_expert_checks','length_arbitration') if name in raw}})
     return result
 
 

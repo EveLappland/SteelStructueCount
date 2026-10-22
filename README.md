@@ -24,7 +24,7 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8120
 ```
 
-`.env` 配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，可设置 `LLM_MAX_CONCURRENCY=3`。模型须支持图片和 JSON。网页可覆盖配置，API Key 只放在内存。默认思考强度 high，手动重试可选 low / high / max。
+`.env` 配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，可设置 `LLM_MAX_CONCURRENCY=5`。模型须支持图片和 JSON。网页可覆盖配置，API Key 只放在内存。默认思考强度 high，手动重试可选 low / high / max。
 
 打开 http://127.0.0.1:8120 。同一任务数据目录只运行一个 Uvicorn 进程。阶段之间串行；第一阶段页面判断/定位、逐视图独立数量统计分别受请求上限限制，PDF 渲染串行。第二阶段无论同时处理多少视图与网格，所有 AI 请求合计不超过 `LLM_MAX_CONCURRENCY` 或网页覆盖值。更新代码后等待任务结束再重启服务，已有结果不会自动重算。
 
@@ -47,7 +47,7 @@ Excel 包含汇总、单根台账、组分配、原始观察、待确认项、�
 
 ## 提示词
 
-当前执行使用 `app/prompts/` 中的 `page_purpose.md`（页面用途）、`construction_catalog.md`（定位与目录）、`view_quantity.md`（第一阶段独立数量标准）、`grid_child.md`（网格观察）、`grid_master.md`（总代理逐根汇总）、`grid_repair.md`（本地矛盾反馈）、`length_expert.md`（长度与分段专家）。`stage_two_members.md` 保留原有单视图提示词，不是本分支的网格请求入口；`stage_three_groups.md` 仅用于历史 AI 提案工具。
+当前执行使用 `app/prompts/` 中的 `page_purpose.md`（页面用途）、`construction_catalog.md`（定位与目录）、`view_quantity.md`（第一阶段独立数量标准）、`grid_child.md`（网格观察）、`grid_master.md`（总代理逐根汇总）、`grid_repair.md`（本地矛盾反馈）、`length_expert.md`（长度与分段专家）、`length_evidence.md`（补证调度）、`length_verifier.md`（独立核验）、`length_arbiter.md`（自动仲裁）。`stage_two_members.md` 保留原有单视图提示词，不是本分支的网格请求入口；`stage_three_groups.md` 仅用于历史 AI 提案工具。
 
 第二阶段 API 的 `view_tags` 只返回所在轴线/标高面，允许空数组。接收后程序先补入第一阶段图纸标题所属面、规范化名称、排序去重标签，再记录 `source_plane_tag` 和 `member_key`。网格重复观察通过 `candidate_ids` 与 `decisions` 显式关联为逐根记录；不做跨视图去重。总代理每行 `member_cnt=1`，程序在长度目录中求和。第一阶段标准比较的是 member_cnt 合计而非 JSON 行数；总数和各规格差异分别保留。第三阶段只比较完整 key，不将不同标签集合做并集，也不修改规格和长度来凑数。2LF / 2F / 2L 先计组合，第三阶段最后展开一次。
 
@@ -63,7 +63,17 @@ Excel 包含汇总、单根台账、组分配、原始观察、待确认项、�
 
 比例标定使用图示尺寸及其原图点位，各方向至少两个不同跨度/位置，比例差不超过 2% 才用于辅助测量；标高数值和重复抄写同一跨度不作独立标定。点位由模型给出，误差仍可能很大。`length_estimate` 与确定长度分开存储，不参与名义长度 key 或跨视图去重；比例文字不直接生成确定长度。估测误差说明使用假设端点各 ±3 像素的示意范围，不是统计置信区间。
 
-专家不修改规格、member_cnt、所属面或标签来源。疑似漏拆/误合并返回 CONFLICT 和说明，本版不自动改变分段行数；有效长度修订按原ID局部合入。API失败、缺引用或未解决时保留原台账。`length_review` 保存原长度/问题、专家依据和本地检查，网页可展开查看；后续正常导出另有 `Length Expert Audit` 工作表。
+专家不修改规格、member_cnt、所属面或标签来源。疑似漏拆/误合并返回 CONFLICT 和说明，本版不自动改变分段行数；专家长度先保存为候选，由自动仲裁按原ID局部合入。API失败、缺引用或未解决时保留原台账。`length_review` 保存原长度/问题、专家依据和本地检查，网页可展开查看；后续正常导出另有 `Length Expert Audit` 工作表。
+
+### 自动补证、核验与仲裁
+
+`app/length_arbitration.py` 在长度专家后调度三个角色，全部复用 `grid_workflow.py` 的请求队列，和网格/总代理共享 `LLM_MAX_CONCURRENCY`（`.env` 可配置，未设置默认 5，网页显式设置优先）。本地裁图不计API请求并发。
+
+专家只提出候选，不直接覆盖台账。证据调度代理按目标端点、拼接标记和完整尺寸链请求合并高清图，也可请求已上传的其他视图；服务器只接受目录内 view_id，不接受模型提供的文件路径。独立核验代理看完整图与补图，首轮不接收旧长度/端点/专家候选。仲裁代理比较 master、专家及独立核验的证据，可选原候选或重新推导；所有加减乘和勾股仍由本地计算。
+
+补证/语义修订预算最多两轮，另有有界传输/格式重试。不等待人工，不无限循环。结果标记 SUPPORTED（图示依据支持）、INFERRED（自动选择最佳可用候选）或 UNRESOLVED（无有效长度）；失败降级也保留每根构件与完整标签。推断不是工程确认，不能以消除 UNKNOWN 代替准确率。此版本不增删分段行、不因数量标准强行凑数；跨视图补图用于取证，不直接认定重复。
+
+`grid_runs/.../<view_id>/arbitration/` 保存各角色输入/原始回答/本地检查、补图清单、所有候选及最终决定。每行 `length_arbitration` 保存原值、最终值与裁决依据；网页显示仲裁状态，最终Excel增加 `Length Arbitration` 审计表。原始任务与历史结果不自动改写。人工参考答案仅由离线评分工具在所有API调用结束后读取，不加入工作包或Prompt。
 
 只测试专家、冻结已有真实 master 输出（仍使用生产共享调度队列，调用付费 API，不修改源任务）：
 

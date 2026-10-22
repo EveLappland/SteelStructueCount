@@ -122,9 +122,9 @@ def estimate(endpoints,scales,size):
             'assumed_endpoint_error_px':3,'basis':'经至少两个不同标注跨度核对的比例测量，仅供辅助；未用于确定长度或去重'} if value>0 else None
 
 
-def assess_reply(payload,rows,size):
+def assess_reply(payload,rows,size,*,target_ids=None):
     payload=LengthExpertResponse.model_validate(payload).model_dump(mode='json')
-    targets={r['id']:r for r in target_rows(rows)}
+    targets={r['id']:r for r in rows if r['id'] in target_ids} if target_ids is not None else {r['id']:r for r in target_rows(rows)}
     refs={r['id']:r for r in payload['references']};feedback=[];updates={}
     counts=Counter(r['member_id'] for r in payload['results'])
     if len(refs)!=len(payload['references']):feedback.append({'check':'duplicate_reference','message':'尺寸引用 ID 重复。'})

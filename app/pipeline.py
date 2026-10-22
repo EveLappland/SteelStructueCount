@@ -253,6 +253,11 @@ def export(directory, stage_one, stage_two, stage_three, history, native):
             [[r['id'],r['spec'],r.get('length_review',{}).get('status'),r.get('length_review',{}).get('applied'),
               r.get('length_review',{}).get('before',{}).get('length_mm'),r['length_mm'],r.get('length_review'),
               r.get('length_estimate'),r.get('length_expert_checks',[])] for r in stage_two['view_members'] if r.get('length_review') or r.get('length_expert_checks')]))
+    if stage_two.get('grid_configuration',{}).get('automatic_length_arbitration'):
+        sheets.append(('Length Arbitration',['构件ID','规格','完整所属面','裁决状态','原长度 mm','最终长度 mm','自动仲裁审计'],
+            [[r['id'],r['spec'],r['view_tags'],r['length_arbitration']['status'],
+              r['length_arbitration']['before_mm'],r['length_mm'],r['length_arbitration']]
+             for r in stage_two['view_members'] if r.get('length_arbitration')]))
     sheets.extend([
         ('Review History',['阶段','版本','时间','操作','理由'],
          [[h['stage'],h['revision'],h['at'],h['action'],h['reason']] for h in history]),

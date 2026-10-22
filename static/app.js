@@ -1,7 +1,7 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
 const stageNames = {1:'视图、轴线与高清裁切',2:'图片识别钢材台账',3:'跨视图匹配与单根统计'};
-const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认',completed_with_warnings:'已完成（有待处理项）',recognizing_grids:'网格识别中',coordinating:'总代理汇总中',checking_lengths:'长度专家核验中',skipped:'无需专项处理',empty:'空台账',region_pending:'裁切待确认'};
+const stateNames = {queued:'排队中',running:'执行中',awaiting_review:'等待阶段确认',approved:'已确认',stale:'已失效',failed:'失败',interrupted:'已中断，可重试',exporting:'导出中',completed:'已完成',filtered:'已过滤',filter_pending:'用途待确认',completed_with_warnings:'已完成（有待处理项）',recognizing_grids:'网格识别中',coordinating:'总代理汇总中',checking_lengths:'长度专家核验中',gathering_length_evidence:'长度补证中',verifying_lengths:'独立核验中',arbitrating_lengths:'自动仲裁中',skipped:'无需专项处理',empty:'空台账',region_pending:'裁切待确认'};
 let jobId='', job=null, draft=null, stageNumber=1, stageKey='', pages=[], dirty=false, timer=null;
 let activeView=null, matchSource=null;
 function node(tag,text='',attrs={}) { const n=document.createElement(tag); n.textContent=text; for(const [k,v] of Object.entries(attrs)) { if(k==='class') n.className=v; else n.setAttribute(k,v); } return n; }
@@ -90,7 +90,7 @@ function renderViewLedger() {
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    if(data.recognition_strategy==='grid_agents')target.append(node('p',`网格子代理、总代理${data.grid_configuration?.length_expert?'、长度专家':''}共用请求并发上限 ${data.grid_configuration?.request_concurrency??'—'}；${data.grid_configuration?.length_expert?'专家核验未知长度与所有斜撑；比例测量仅作辅助，未用于确定长度或去重。':'此历史任务未启动长度专项。'}`));
+    if(data.recognition_strategy==='grid_agents')target.append(node('p',`网格子代理、总代理${data.grid_configuration?.length_expert?'、长度专家':''}${data.grid_configuration?.automatic_length_arbitration?'、补证与仲裁代理':''}共用请求并发上限 ${data.grid_configuration?.request_concurrency??'—'}；${data.grid_configuration?.length_expert?'专家核验未知长度与所有斜撑；比例测量仅作辅助，未用于确定长度或去重。':'此历史任务未启动长度专项。'}`));
     target.append(table(['视图','识别状态','网格数','模型请求数','第一阶段数量标准','构件数（组合未展开）','规格数量差异','尚存校验问题'],data.view_analysis.map(a=>[
         data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,
         a.grid_count??'—',a.model_calls??a.rounds_attempted??'—',a.label_count,a.member_cnt,
@@ -110,6 +110,7 @@ function renderViewLedger() {
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
         const analysis=data.view_analysis.find(a=>a.view_id===id);
         if(analysis?.length_expert){const e=analysis.length_expert;const details=node('details');details.append(node('summary',`长度专家 · ${stateNames[e.status]||e.status} · 目标 ${e.target_count} · 合入 ${e.applied_count??0} · 长度变化 ${e.changed_count??0}`),node('pre',JSON.stringify(e,null,2)));for(const crop of analysis.length_expert_context_images||[])details.append(node('a','打开专家请求的扩展上下文',{href:`/api/jobs/${jobId}/views/${crop.image_file}`,target:'_blank'}));panel.append(details);}
+        if(analysis?.length_arbitration){const a=analysis.length_arbitration;const details=node('details');details.append(node('summary',`自动长度仲裁 · ${stateNames[a.status]||a.status} · 有依据 ${a.supported??0} · 推断 ${a.inferred??0} · 未解决 ${a.unresolved??0}`),node('pre',JSON.stringify(a,null,2)));panel.append(details);}
         if(analysis?.grid_tiles?.length){const grids=node('details');grids.append(node('summary',`${analysis.grid_tiles.length} 张识图网格（原图像素，无附加标记）`));for(const tile of analysis.grid_tiles)grids.append(node('a',`${tile.id} · ${tile.width_px}×${tile.height_px}`,{href:`/api/jobs/${jobId}/views/${tile.image_file}`,target:'_blank'}));panel.append(grids);}
         panel.append(table(['规格','所属视图标签','member_cnt','长度 mm','长度依据 / 斜撑直角边 mm','构件位置','未解决问题','校验','长度专家依据','操作'],data.view_members.filter(r=>r.source_view===id).map(r=>[
             input('规格',r.spec,v=>setField(r,'spec',v)),
@@ -123,7 +124,7 @@ function renderViewLedger() {
                 node('small',r.length_input.evidence||r.length_formula||''));return wrap;})() : (r.length_input?.evidence||r.length_formula||''),
             input('用平面或立面轴线说明位置',r.location||'',v=>setField(r,'location',v)),
             input('可留空',r.issue,v=>setField(r,'issue',v||null)),r.checks.join('；'),
-            r.length_review?(()=>{const d=node('details');d.append(node('summary',`${r.length_review.status} · ${r.length_review.applied?'已合入':'原结果保留'}`),node('pre',JSON.stringify(r.length_review,null,2)));return d;})():'未专项处理',
+            r.length_review?(()=>{const d=node('details');d.append(node('summary',`${r.length_review.status} · ${r.length_review.applied?'已合入':'原结果保留'}`),node('pre',JSON.stringify(r.length_arbitration||r.length_review,null,2)));return d;})():'未专项处理',
             button('删除',()=>{data.view_members=data.view_members.filter(x=>x!==r);mark();show(id);},'secondary')
         ])));
         const legacy=data.view_members.filter(r=>r.source_view===id&&(r.legacy_basis||r.basis));
