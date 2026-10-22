@@ -90,7 +90,13 @@ function renderViewLedger() {
         if(activeView)summarySection(currentSummary,data.view_members.filter(r=>r.source_view===activeView.id),`${activeView.title} 台账汇总`);
     }
     target.append(overview);
-    if(data.recognition_strategy==='grid_agents')target.append(node('p',`网格子代理、总代理${data.grid_configuration?.length_expert?'、长度专家':''}${data.grid_configuration?.automatic_length_arbitration?'、补证与仲裁代理':''}共用请求并发上限 ${data.grid_configuration?.request_concurrency??'—'}；${data.grid_configuration?.length_expert?'专家核验未知长度与所有斜撑；比例测量仅作辅助，未用于确定长度或去重。':'此历史任务未启动长度专项。'}`));
+    if(data.recognition_strategy==='grid_agents'){
+        const policy=data.grid_configuration?.length_review_policy;
+        target.append(node('p',policy?.mode==='economy'
+            ?`长度复核采用节省模式：一次核验，仅冲突或缺少依据的记录再仲裁；每视图最多 ${policy.max_calls_per_view} 次长度复核请求（含失败重试）。网格与总代理另计，共享并发上限 ${data.grid_configuration?.request_concurrency??'—'}。`
+            :`网格、总代理与长度复核共用请求并发上限 ${data.grid_configuration?.request_concurrency??'—'}；${policy?`每视图长度复核最多 ${policy.max_calls_per_view} 次请求（含失败重试）。`:'此历史任务使用原长度复核流程。'}`));
+        target.append(node('p','原始PDF文字及数值可追溯；端点、拼接和尺寸归属仍是模型判断。本地计算正确不代表图示对应一定正确。'));
+    }
     target.append(table(['视图','识别状态','网格数','模型请求数','第一阶段数量标准','构件数（组合未展开）','规格数量差异','尚存校验问题'],data.view_analysis.map(a=>[
         data.views.find(v=>v.id===a.view_id)?.title||a.view_id,stateNames[a.status]||a.status,
         a.grid_count??'—',a.model_calls??a.rounds_attempted??'—',a.label_count,a.member_cnt,
@@ -109,6 +115,7 @@ function renderViewLedger() {
         const titles=tags=>tags.map(tag=>data.views.find(v=>v.id===tag)?.title||tag).join('；');
         panel.append(node('h3',view.title),node('img','',{src:`/api/jobs/${jobId}/views/${view.image_file||id+'.jpg'}`,alt:view.title,style:'max-width:100%'}));
         const analysis=data.view_analysis.find(a=>a.view_id===id);
+        if(analysis?.length_review_policy)panel.append(node('p',`本视图长度复核请求：${analysis.length_review_calls??0} / ${analysis.length_review_policy.max_calls_per_view}（含失败重试；网格及总代理另计）`));
         if(analysis?.length_expert){const e=analysis.length_expert;const details=node('details');details.append(node('summary',`长度专家 · ${stateNames[e.status]||e.status} · 目标 ${e.target_count} · 合入 ${e.applied_count??0} · 长度变化 ${e.changed_count??0}`),node('pre',JSON.stringify(e,null,2)));for(const crop of analysis.length_expert_context_images||[])details.append(node('a','打开专家请求的扩展上下文',{href:`/api/jobs/${jobId}/views/${crop.image_file}`,target:'_blank'}));panel.append(details);}
         if(analysis?.length_arbitration){const a=analysis.length_arbitration;const details=node('details');details.append(node('summary',`自动长度仲裁 · ${stateNames[a.status]||a.status} · 有依据 ${a.supported??0} · 推断 ${a.inferred??0} · 未解决 ${a.unresolved??0}`),node('pre',JSON.stringify(a,null,2)));panel.append(details);}
         if(analysis?.grid_tiles?.length){const grids=node('details');grids.append(node('summary',`${analysis.grid_tiles.length} 张识图网格（原图像素，无附加标记）`));for(const tile of analysis.grid_tiles)grids.append(node('a',`${tile.id} · ${tile.width_px}×${tile.height_px}`,{href:`/api/jobs/${jobId}/views/${tile.image_file}`,target:'_blank'}));panel.append(grids);}

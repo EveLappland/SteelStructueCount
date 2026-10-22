@@ -25,6 +25,7 @@ from .native_pdf import write_json
 from .quantity_reference import assess_quantity
 from .settings import _api_settings
 from .view_filter import role
+from .drawing_facts import build_facts,review_policy,claim_length_call
 
 MAX_FORMAT_RETRIES=2
 MAX_MASTER_REPAIRS=2
@@ -111,6 +112,7 @@ def master_task(item,*,previous=None,feedback=None,round=0):
 def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,recorded_masters=None):
     from .pipeline import load_native,model_call,OpenAI,response_content
     started=time.monotonic();directory=Path(directory);limit=view_concurrency(settings)
+    length_policy=review_policy()
     base,key,model=_api_settings(settings)
     pages={page['id']:page for page in load_native(directory)}
     one={**one,'axis_catalog':build_axis_catalog(list(pages.values()),one['views'])}
@@ -119,7 +121,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         'max_master_repairs':MAX_MASTER_REPAIRS,'max_format_retries':MAX_FORMAT_RETRIES,
         'unknown_length_specialist':True,'length_expert':True,'max_length_rounds':2,
         'automatic_length_arbitration':True,'max_arbitration_evidence_rounds':MAX_EVIDENCE_ROUNDS,
-        'length_review_scope':'all_members',
+        'length_review_scope':'all_members','length_review_policy':length_policy,
         'scale_mode':'auxiliary_only','master_input_mode':'recorded_real_output' if recorded_masters is not None else 'grid_requests'}).model_dump()
     result['warnings']=[]
     folder=directory/'responses'/f'attempt-grid-{uuid.uuid4().hex}'
@@ -146,8 +148,12 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         context=frame_context(view,one)
         entry={'id':view['id'],'page':pages[view['page_id']]['page'],'source_path':str(image),
                'image_path':str(image),'image_dpi':300,'allowed_view_tags':context['axis_names']}
-        item.update(plan=plan,entry=entry,context=context)
+        item.update(plan=plan,entry=entry,context=context,length_policy=length_policy,
+                    length_calls=0,drawing_facts=build_facts(pages[view['page_id']],view))
+        write_json(trace/view['id']/'drawing_facts.json',item['drawing_facts'])
         item['status'].update(grid_count=len(plan['tiles']),children_completed=0,model_calls=0,
+                              drawing_facts_file=str((trace/view['id']/'drawing_facts.json').relative_to(directory)),
+                              length_review_policy=length_policy,
                               quantity_reference=view.get('quantity_reference'),grid_tiles=plan['tiles'])
         write_json(trace/view['id']/'input.json',{'stage_one_context':context,'grid':plan,
                    'stage_one_views':len(one['views']),'image_sha256':plan['input_sha256']})
@@ -177,7 +183,8 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         entry={**task.entry,'id':task.name,'view_id':task.view_id,'task_kind':task.kind}
         path=folder/f'{task.name}.json'
         try:
-            with OpenAI(base_url=base,api_key=key,timeout=600,max_retries=1) as client:
+            with OpenAI(base_url=base,api_key=key,timeout=600,
+                        max_retries=0 if task.kind=='length_expert' or task.kind in CONTRACTS else 1) as client:
                 payload=model_call(client,model,task.prompt,entry,path,task.contract,emit=emit,audit=audit,
                     reuse_saved=reuse_saved,reasoning_effort=settings.get('reasoning_effort','high'))
             return {'payload':payload,'path':path}
@@ -212,9 +219,13 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
         # wrong endpoint. Numeric presence is not a reason to bypass review.
         item['length_target_ids']=[r['id'] for r in rows]
         if rows:
-            item['status']['length_expert']={'status':'queued','target_count':len(rows)}
-            entry,prompt=work_package(item)
-            queue.appendleft(Task(item['view']['id'],'length_expert',entry,prompt))
+            if length_policy['mode']=='economy':
+                item['status']['length_expert']={'status':'skipped','reason':'economy: reuse master; direct evidence verification','target_count':0}
+                begin_arbitration(item,None)
+            else:
+                item['status']['length_expert']={'status':'queued','target_count':len(rows)}
+                entry,prompt=work_package(item)
+                queue.appendleft(Task(item['view']['id'],'length_expert',entry,prompt))
         else:item['status']['length_expert']={'status':'skipped','target_count':0}
 
     def expert_failed(item,message):
@@ -284,6 +295,16 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
             dispatched=False
             while queue and len(pending)<limit:
                 task=queue.popleft();item=by_id[task.view_id]
+                if task.kind=='length_expert' or task.kind in CONTRACTS:
+                    if not claim_length_call(item,length_policy):
+                        message='每视图长度复核调用预算已耗尽，保留现有候选与证据，不继续调用。'
+                        audit.event('LENGTH_CALL_BUDGET_EXHAUSTED',view_id=task.view_id,kind=task.kind,**length_policy)
+                        if task.kind=='length_expert':expert_failed(item,message)
+                        else:
+                            item['arbiter'].finish(None,None)
+                            schedule_arbitration(item,None)
+                        checkpoint()
+                        continue
                 item['calls']+=1;item['status']['model_calls']=item['calls']
                 item['status']['status']={'child':'recognizing_grids','master':'coordinating','length_expert':'checking_lengths',
                     'length_evidence':'gathering_length_evidence','length_verifier':'verifying_lengths','length_arbiter':'arbitrating_lengths'}[task.kind]
@@ -293,6 +314,7 @@ def recognize_views(directory,one,settings,emit,audit,*,reuse_saved=False,record
                 audit.event('GRID_REQUEST_QUEUED',view_id=task.view_id,kind=task.kind,tile_id=task.tile_id,
                     round=task.round,format_retry=task.format_retry,active_requests=len(pending),concurrency_limit=limit)
             if dispatched:checkpoint()
+            if not pending:continue
             completed,_=wait(pending,return_when=FIRST_COMPLETED)
             for future in sorted(completed,key=lambda f:pending[f].name):
                 task=pending.pop(future);item=by_id[task.view_id];reply=future.result()

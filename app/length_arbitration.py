@@ -13,7 +13,8 @@ from pydantic import Field
 
 from .domain_base import Contract
 from .length_context import freeze_context, work_package
-from .length_expert import ContextRequest, LengthExpertResponse, assess_reply, target_rows
+from .length_expert import ContextRequest, LengthExpertResponse, assess_reply, target_rows, apply_reply
+from .drawing_facts import row_source_checks
 from .member_recognition import LengthInput, calculate_length
 from .native_pdf import write_json
 
@@ -91,6 +92,7 @@ class LengthArbitration:
         self.images = []
         self.feedback = []
         self.round = 0
+        self.economy = item.get('length_policy', {}).get('mode') == 'economy'
         self.verifier_rounds = 0
         self.judge_rounds = 0
         self.status = {'status': 'running', 'target_count': len(self.targets),
@@ -166,7 +168,7 @@ class LengthArbitration:
             details.append(str(self.item['directory'] / 'views' / evidence['image_file']))
         entry = {**entry, 'detail_paths': details}
         metadata['evidence_round'] = self.round
-        metadata['evidence_rounds_remaining'] = MAX_EVIDENCE_ROUNDS - self.round
+        metadata['evidence_rounds_remaining'] = 0 if self.economy else MAX_EVIDENCE_ROUNDS - self.round
         if kind == 'length_arbiter':
             metadata.update(candidates=self.candidates, local_feedback=self.feedback,
                             evidence_images=self.images)
@@ -176,6 +178,19 @@ class LengthArbitration:
             for image in metadata['image_map']:
                 image.pop('reason', None)
             metadata['independence_note'] = '独立读取原图；未提供任何旧长度、候选答案或其他代理的判断。'
+        if self.economy and kind == 'length_arbiter':
+            # Keep the complete original as context; send only target-related
+            # grid details. Expanded evidence images are never dropped here.
+            tiles = {label['source_tile'] for member in metadata['target_members'] for label in member['labels']}
+            if tiles:
+                pairs = list(zip(metadata['image_map'][1:], entry['detail_paths']))
+                pairs = [(info, path) for info, path in pairs
+                         if info.get('role') != 'grid_detail' or info.get('tile_id') in tiles]
+                metadata['image_map'] = [metadata['image_map'][0], *[info for info, _ in pairs]]
+                for index, info in enumerate(metadata['image_map'], 1):
+                    info['image_number'] = index
+                entry['detail_paths'] = [path for _, path in pairs]
+        metadata['length_call_budget'] = self.item.get('length_policy', {})
         prompt = (Path(__file__).parent / 'prompts' / f'{kind}.md').read_text(encoding='utf-8')
         self.save(f'{kind}_input{self.round:02d}.json', metadata)
         return kind, entry, prompt + '\n输入工作包：\n' + json.dumps(metadata, ensure_ascii=False)
@@ -183,7 +198,51 @@ class LengthArbitration:
     def start(self):
         self.audit.event('LENGTH_ARBITRATION_STARTED', view_id=self.item['view']['id'],
                          targets=self.targets, candidate_count=sum(map(len, self.candidates.values())))
-        return self.package('length_evidence')
+        return self.package('length_verifier' if self.economy else 'length_evidence')
+
+    def accept_verified(self, assessment):
+        """Reuse a real verifier reply; only conflicts/missing evidence go to judge.
+
+        Source-value checking proves a quoted token, never visual association.
+        No synthetic model reply or vote is manufactured for this fast path.
+        """
+        pending = []
+        registry = self.item.get('drawing_facts', {})
+        for identity in self.targets:
+            update = assessment['updates'].get(identity)
+            if update is None:
+                pending.append(identity)
+                continue
+            source_checks = row_source_checks(update['resolution'], assessment['payload']['references'], registry)
+            local_errors = [f for f in assessment['feedback'] if f.get('member_id') in (None, identity)]
+            proposed = next((c for c in reversed(self.candidates[identity]) if c['role'].startswith('verifier')), None)
+            master = self.candidates[identity][0]
+            differs = not proposed or not proposed['selectable'] or not master['selectable'] or abs(proposed['length_mm'] - master['length_mm']) > .01
+            if source_checks or local_errors or differs:
+                pending.append(identity)
+                self.feedback += [{'member_id': identity, **f} for f in source_checks]
+                continue
+            subset = {**assessment, 'updates': {identity: update}, 'missing': []}
+            updated, _ = apply_reply([r for r in self.rows if r['id'] == identity], subset)
+            row = updated[0]
+            row['length_arbitration'] = {
+                'status': 'SUPPORTED', 'evidence_status': 'SOURCE_LINKED_MODEL_RELATION',
+                'source_checks': [], 'candidates': self.candidates[identity],
+                'final_expression': proposed, 'before_mm': master['length_mm'], 'after_mm': row['length_mm'],
+                'automatic': True, 'manual_required': False, 'decision_origin': 'local_source_gate_after_real_verifier',
+                'note': 'PDF原文数值已核对；端点及尺寸归属仍为模型判断，并非程序证明。'}
+            self.rows = [row if r['id'] == identity else r for r in self.rows]
+            self.audit.event('LENGTH_SOURCE_GATE_ACCEPTED',view_id=self.item['view']['id'],member_id=identity)
+        self.save('source_gate.json', {'pending_ids': pending, 'feedback': self.feedback,
+                                     'checked_ids': self.targets, 'rows': self.rows})
+        self.targets = pending
+        self.item['length_target_ids'] = pending
+        self.item['rows'] = deepcopy(self.rows)
+        self.candidates = {i: self.candidates[i] for i in pending}
+        if not pending:
+            self.finish(None, None)
+            return None
+        return self.package('length_arbiter')
 
     def accept(self, kind, payload):
         self.save(f'{kind}_reply{self.round:02d}.json', payload)
@@ -198,6 +257,11 @@ class LengthArbitration:
             self.verifier_rounds += 1
             self.add_assessment(f'verifier{self.round}', assessment)
             self.feedback = assessment['feedback']
+            if self.economy:
+                request = payload.get('context_request')
+                if request:
+                    self.feedback += self.freeze([{**request, 'view_id': self.item['view']['id'], 'member_ids': self.targets}])
+                return self.accept_verified(assessment)
             request = payload.get('context_request')
             if request and self.round < MAX_EVIDENCE_ROUNDS:
                 self.feedback += self.freeze([{**request, 'view_id': self.item['view']['id'],
@@ -211,7 +275,7 @@ class LengthArbitration:
         if payload.get('context_request'):
             requests.append({**payload['context_request'], 'view_id': self.item['view']['id'],
                              'member_ids': self.targets})
-        if (requests or self.feedback) and self.round < MAX_EVIDENCE_ROUNDS:
+        if not self.economy and (requests or self.feedback) and self.round < MAX_EVIDENCE_ROUNDS:
             self.feedback += self.freeze(requests)
             self.round += 1
             return self.package('length_arbiter')
@@ -241,6 +305,9 @@ class LengthArbitration:
             if verdict['decision'] == 'SUPPORTED' and (len(results) != 1 or results[0]['status'] != 'CONFIRMED'):
                 feedback.append({'check': 'unsupported_final_expression', 'member_id': verdict['member_id'],
                                  'message': 'SUPPORTED必须提供对应的CONFIRMED结果及完整表达式，不能仅选候选或返回UNKNOWN。'})
+            if self.item.get('drawing_facts') is not None and len(results)==1 and verdict['decision']=='SUPPORTED':
+                feedback += [{'member_id':verdict['member_id'],**f} for f in
+                    row_source_checks(results[0],payload['references'],self.item['drawing_facts'])]
         return feedback
 
     def failed(self, kind, message):
@@ -306,6 +373,7 @@ class LengthArbitration:
             row['length_expert_checks'] = [] if decision == 'SUPPORTED' else [
                 '长度自动仲裁：采用证据最充分的推断候选。' if chosen else '长度自动仲裁未取得有效尺寸；构件保留，长度未知。']
             row['length_arbitration'] = {'status': decision,
+                'evidence_status': 'SOURCE_LINKED_MODEL_RELATION' if decision=='SUPPORTED' and self.item.get('drawing_facts') is not None else 'MODEL_INTERPRETATION_OR_FALLBACK',
                 'selected_candidate_id': chosen['candidate_id'] if chosen else None,
                 'verdict': verdict, 'candidates': candidates,
                 'final_expression': chosen, 'local_feedback': errors,
@@ -323,12 +391,13 @@ class LengthArbitration:
             self.audit.event('LENGTH_ARBITRATION_DECIDED', view_id=self.item['view']['id'],
                              **changes[-1], candidate_id=row['length_arbitration']['selected_candidate_id'])
         self.item['rows'] = revised
-        self.status.update(status='completed_with_warnings' if any(c['status'] != 'SUPPORTED' for c in changes) else 'completed',
+        decisions = [r['length_arbitration']['status'] for r in revised if r.get('length_arbitration')]
+        self.status.update(status='completed_with_warnings' if any(c != 'SUPPORTED' for c in decisions) else 'completed',
             verifier_rounds=self.verifier_rounds, judge_rounds=self.judge_rounds,
             evidence_rounds=self.round, evidence_images=len(self.images),
-            supported=sum(c['status'] == 'SUPPORTED' for c in changes),
-            inferred=sum(c['status'] == 'INFERRED' for c in changes),
-            unresolved=sum(c['status'] == 'UNRESOLVED' for c in changes),
+            supported=decisions.count('SUPPORTED'),
+            inferred=decisions.count('INFERRED'),
+            unresolved=decisions.count('UNRESOLVED'),
             unknown_remaining=sum(r.get('length_mm') is None for r in revised),
             changes=changes, feedback=self.feedback)
         self.item['status'].update(status='completed_with_warnings' if self.status['status'] != 'completed' or

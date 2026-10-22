@@ -50,6 +50,8 @@ def work_package(item,*,previous=None,feedback=None,round=0):
         images.append({'image_number':len(images)+1,'role':'expanded_context',**crop})
         paths.append(str(directory/'views'/crop['image_file']))
     metadata['image_map']=images
+    if item.get('drawing_facts') is not None:
+        metadata['drawing_facts']=item['drawing_facts']
     if previous is not None:metadata.update(previous_expert_reply=previous,local_feedback=feedback or [])
     text=(Path(__file__).parent/'prompts/length_expert.md').read_text(encoding='utf-8')
     return {**item['entry'],'detail_paths':paths},text+'\n输入工作包：\n'+json.dumps(metadata,ensure_ascii=False)

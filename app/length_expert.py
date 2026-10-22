@@ -35,6 +35,8 @@ class DimensionReference(Contract):
     start: Anchor | None = None
     end: Anchor | None = None
     evidence: str = Field(min_length=1,max_length=1800)
+    source_ids: list[str] = Field(default_factory=list)
+    baseline_basis: str | None = Field(default=None,max_length=1800)
 
 
 class Term(Contract):
@@ -56,6 +58,7 @@ class LengthResolution(Contract):
     components: list[Component]
     reference_ids: list[str]
     issue: str | None = Field(max_length=2400)
+    endpoint_kinds: list[Literal['END','SPLICE','INTERSECTION','UNKNOWN']] | None = Field(default=None,min_length=2,max_length=2)
 
 
 class ContextRequest(Contract):

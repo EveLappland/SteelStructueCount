@@ -124,3 +124,8 @@ node --test tests/*.cjs
 
 评分返回 1 表示存在差异，不表示程序崩溃。可选独立工具：`render_views.py` 渲染、`benchmark_view_concurrency.py` 并发、`test_group_dedup.py` / `test_group_reconciliation.py` 分组诊断、`experiment_label_colors.py` 着色对比、`score_reference.py` 完整所属面的 JSON 参考核验。
 
+# 长度复核费用控制
+
+第二阶段默认使用 `LENGTH_REVIEW_MODE=economy`：复用 PDF 文字和已识别台账，一次核验，仅冲突或缺少依据的记录再仲裁。`.env` 中 `LENGTH_REVIEW_MAX_CALLS=2` 限制每视图长度复核请求次数，包含格式及传输失败的重试；网格识图、总代理及第一阶段调用另计。`full` 可恢复原多角色流程，但同样遵守设定的调用上限。修改后需重启服务。
+
+尺寸引用增加原文 `source_ids`、尺寸基准 `baseline_basis`；端点增加 `endpoint_kinds`。程序核对来源及数值，几何对应仍为模型判断；未取得充分依据的记录保留推断或未知状态。事实目录和完整中间记录随证据 ZIP 导出。详见 [长度仲裁设计](docs/automatic-length-arbitration.md)。

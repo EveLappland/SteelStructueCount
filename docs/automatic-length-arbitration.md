@@ -1,5 +1,7 @@
 # 自动长度仲裁：设计与验证
 
+当前默认采用文末的 **Evidence provenance and economical review** 流程；以下多角色执行路径及验收数字保留为历史记录，不代表节省模式的新验收结果。
+
 2026-10-22，分支 `feature/automatic-length-arbitration`。
 
 ## 执行路径
@@ -69,3 +71,39 @@
 另增加本地守护：有效仲裁若明确否决所有候选，不再仅因旧候选有数字就重新选回该数字；历史数值保存在审计，不写入有效长度key。该失败分支由纯本地决策测试覆盖；本次实测没有出现“UNRESOLVED却仍有可选数值”的记录。
 
 最终回归：140项Python测试及5项Node测试通过；包括真实回答的当前契约重放、完整身份不丢失、来源key重算、独立输入隔离及Excel仲裁审计导出。没有用构造的模型回答替代真实API验收。
+# Evidence provenance and economical review (2026-10-22)
+
+New jobs default to `LENGTH_REVIEW_MODE=economy`. Set `LENGTH_REVIEW_MAX_CALLS=2`
+in `.env` to cap length-role requests per view, including failed attempts and
+format retries. The OpenAI SDK does not silently retry these requests. Grid
+children, master reconciliation, stage one and their retries are **outside this
+length budget**; this is a request cap, not a currency or total-token cap.
+`full` retains the previous expert/planner/verifier/arbiter workflow, but it also
+obeys the explicit length-call cap (default 12 when no cap is set in full mode).
+
+Economy sequence:
+
+1. Reuse the real master response and already extracted PDF text. Persist
+   `grid_runs/<attempt>/<view>/drawing_facts.json`: original text IDs, file/page,
+   page and view boxes, and strictly parsed dimension/level values. Profile-size
+   digits are not treated as dimension facts. No additional LLM extraction call.
+2. One independent verifier checks all rows, including existing DIRECT values.
+   References supply `source_ids`, `baseline_basis`; resolutions supply
+   `endpoint_kinds`. The local gate verifies referenced IDs and original values,
+   unit conversion, required baseline anchors, declared endpoint kinds and
+   arithmetic. Original text position is never substituted for a dimension
+   extension-line endpoint.
+3. Rows with unchanged lengths and complete source links reuse the actual
+   verifier result without a judge call. Differences, unknowns, missing source
+   links, or local errors go to the arbiter as a subset. Keep the complete view;
+   omit grid detail images unrelated to target label tiles. If the verifier asks
+   for a merged crop, generate it locally for this arbiter request.
+4. Stop at the call budget. Do not delete members or force lengths/counts.
+   Existing candidates and unresolved evidence remain in the automatic ledger
+   and audit. Source matching does **not** prove model interpretation of visual
+   baselines or splice/member association; `SUPPORTED` still expresses a model
+   judgment, not independently established ground truth.
+
+No new live API accuracy or monetary savings measurement accompanies this
+change. Earlier acceptance tables below describe the earlier multi-role runs;
+they must not be presented as measurements of economy mode.

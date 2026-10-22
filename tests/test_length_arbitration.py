@@ -116,6 +116,26 @@ class RecordedArbitrationTests(unittest.TestCase):
         self.assertEqual(checked['missing'], [])
         self.assertFalse(any(f['check'] == 'target_coverage' for f in checked['feedback']))
 
+    def test_economy_uses_real_verifier_without_planner_and_keeps_unlinked_rows_for_judge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            from app.audit import AuditLog
+            item = {'view': self.view, 'rows': deepcopy(self.rows), 'plan': self.plan,
+                    'directory': Path(folder), 'entry': {'image_path': 'original.png'},
+                    'context': {'current_view_tag': self.view['plane_name'], 'axis_names': []},
+                    'status': {}, 'calls': 0, 'length_policy': {'mode': 'economy', 'max_calls_per_view': 2},
+                    'drawing_facts': {'facts': []}}
+            controller = LengthArbitration(item, [item], None, Path(folder),
+                AuditLog(Path(folder), stage=2), lambda _: None)
+            self.assertEqual(controller.start()[0], 'length_verifier')
+            original = deepcopy(item['rows'])
+            # Replay a saved real response through local contracts. No API is
+            # called and no model answer is manufactured for this test.
+            request = controller.accept('length_verifier', self.assessment['payload'])
+            self.assertEqual(request[0], 'length_arbiter')
+            self.assertEqual(item['rows'], original)
+            self.assertGreater(len(controller.targets), 0)
+            self.assertTrue(any(f['check'] == 'source_identity' for f in controller.feedback))
+
 
 class RecordedLiveArbitrationTests(unittest.TestCase):
     def test_export_keeps_final_arbitration_audit_without_advancing_a_job(self):

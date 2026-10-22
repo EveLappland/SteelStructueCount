@@ -22,3 +22,8 @@ references/results格式：references=[{id,kind:DIMENSION/LEVEL/OFFSET,axis:X/Y,
 若需要更多证据且evidence_rounds_remaining>0，context_requests最多6项，每项{view_id,member_ids,bbox:[左,上,右,下],reason}；来源仅uploaded_views，bbox相对该来源完整原图，包含两端、拼接与尺寸链。请同时给本轮最佳裁决，程序补图后重新提交；不要反复索取相同区域。预算耗尽按现有证据给最终裁决，不能要求人工、等待回复或无限循环。
 
 仅返回{references:[...],results:[...],context_request:null,verdicts:[...],context_requests:[]}。context_request保留为null，补图统一用context_requests。
+
+
+原始事实与解释必须分开：drawing_facts 是程序从本视图 PDF 原文提取的文字、原始 ID、页码和 bbox。它只证明文字及其位置，不证明这条尺寸属于哪个构件。references 每项增加 source_ids（原始文字 ID 数组）和 baseline_basis（尺寸起止基准、引出线如何与构件端点/拼接对应的简述）。value_mm 必须是所引原文的值，标高米转毫米；推导值只能写在 components 的表达式中，不能伪装为原始尺寸。找不到文字依据时 source_ids=[]，明确保留歧义，不能编造 ID。
+results 每项增加 endpoint_kinds，顺序与 endpoints 一致：[END/SPLICE/INTERSECTION/UNKNOWN, END/SPLICE/INTERSECTION/UNKNOWN]。只有真实端部 END 或有图示分段依据的 SPLICE 可支持确定分段；相交、轴线和网格边界本身不能作为拼接证据。沿构件追踪“真实端部→拼接→真实端部”，再把各区间与尺寸基准对应；不要先按附近轴线或等分跨度生成端点。缺少远处尺寸时一次提出包含完整构件链及尺寸链的合并裁图请求。
+原始事实的数值一致与几何归属是两件事：即使程序校验 source_ids/value_mm 成功，基准归属仍是你的图示解释。第一阶段数量也是独立模型观察，不是事实标准；不得为凑数改变分段。
