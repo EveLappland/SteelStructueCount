@@ -2,6 +2,8 @@
 
 原生标签与轴面特性交付：见 [独立工具说明](docs/pdf-label-tags-experiment.md)。输出 `stage_one_facts.json` 供标签约束的第二阶段使用，现有任务不自动迁移。
 
+固定标签第二阶段：见 [尺寸识别说明](docs/label-constrained-lengths.md)，使用 `tools/test_label_lengths.py` 运行网格子代理、总代理和按需专家/仲裁。
+
 从钢结构 PDF 建造布置图建立规格、名义长度和数量台账。FastAPI、原生 JavaScript、PyMuPDF、OpenAI 兼容 API、SQLite 和 openpyxl。默认自动执行三个阶段并导出，也可逐阶段暂停。
 
 ## 当前流程
