@@ -3,6 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>钢材图纸统计</title><link rel="stylesheet" href="/styles.css"></head>
 <body><main class="shell">
 <header><div><p class="eyebrow">PDF → 视图 → 钢材台账</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
+<p><a href="/workflow"><strong>进入新版固定标签流程：PDF 上传、尺寸识别、匹配去重与导出 →</strong></a>　此页保留旧版任务。</p>
 <section class="workspace">
 <form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认自动完成页面筛选、高清裁切、AI构件识别与完整key去重，导出台账。疑点保留在审计与待处理清单；可选人工修改。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，手动检查后继续</label><label class="toggle"><input id="stage12-only" type="checkbox">仅测试第一、二阶段，完成后暂停</label>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>

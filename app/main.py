@@ -40,6 +40,8 @@ def create_app(root=ROOT, start_workers=True):
     @asynccontextmanager
     async def lifespan(application):
         store.recover()
+        if start_workers:
+            application.state.native_runs.recover()
         yield
 
     application=FastAPI(title='钢材坐标实体统计',lifespan=lifespan)
@@ -307,6 +309,10 @@ def create_app(root=ROOT, start_workers=True):
             html=html.replace(f'"/{name}"',f'"/{name}?v={version}"')
         return HTMLResponse(html,headers={'Cache-Control':'no-store'})
 
+    from .native_web import router
+    native_router, native_service = router(root, ROOT/'static', start_workers)
+    application.include_router(native_router)
+    application.state.native_runs = native_service
     application.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')
     return application
 
