@@ -4,6 +4,7 @@ import csv
 import html
 import json
 from openpyxl import Workbook
+from PIL import Image
 
 
 def export(directory, report):
@@ -32,25 +33,38 @@ def export(directory, report):
     sections = []
     for view in report['views']:
         local = [r for r in rows if r['view_id'] == view['view_id']]
-        body = []
+        body,marks = [],[]
+        with Image.open(directory/view['image_file']) as opened:
+            width,height = opened.size
         for number,row in enumerate(local,1):
             length = f"{row['length_mm']:.2f}" if row['length_mm'] is not None else 'UNKNOWN'
+            identity = 'label-'+row['label_id']
+            b = row['bbox_view']; x,y,bw,bh = b[0]*width,b[1]*height,(b[2]-b[0])*width,(b[3]-b[1])*height
+            color = '#a66b00' if row['length_mm'] is None else '#b51ba3'
+            marks.append(f'<g class="label" id="{escape(identity)}"><title>{number}: {escape(row["spec"])} · {length} mm</title>'
+                         f'<rect x="{x}" y="{y}" width="{bw}" height="{bh}" stroke="{color}"/>'
+                         f'<text x="{x+bw+2}" y="{y+width/130}" style="font-size:{width/120}px">{number}</text></g>')
             details = {'endpoints':row['endpoints'],'dimension_values_mm':row['dimension_values_mm'],
                        'formulas':row['formulas'],'basis':row['basis'],'issue':row['issue'],
                        'local_checks':row['local_checks'],'selected_role':row['selected_role'],
                        'review_notes':row.get('review_notes',[]),'arbitration':row.get('arbitration')}
-            body.append(f'<tr><td>{number}</td><td>{escape(row["spec"])}</td><td>{length}</td>'
+            body.append(f'<tr><td><a href="#{escape(identity)}">{number}</a></td><td>{escape(row["spec"])}</td><td>{length}</td>'
                 f'<td>{escape(row["view_tags"])}</td><td>{escape(row["status"])}</td><td>{escape(row["label_id"])}'
                 f'<details><summary>尺寸依据与问题</summary><pre>{escape(json.dumps(details,ensure_ascii=False,indent=2))}</pre></details></td></tr>')
         known = sum(r['length_mm'] is not None for r in local)
         sections.append(f'<section><h2>{escape(view["title"])}</h2><p>第一阶段 {view["expected_count"]} 条标签；'
             f'台账 {len(local)} 条；有长度 {known}，UNKNOWN {len(local)-known}；状态 {escape(view["state"])}</p>'
-            f'<details><summary>第一阶段高清图</summary><img src="{escape(view["image_file"])}" style="width:100%"></details>'
+            f'<details open><summary>第一阶段高清图与固定标签编号（点击图片切换原始大小）</summary><div class="viewport">'
+            f'<svg viewBox="0 0 {width} {height}" style="--native-width:{width}px" onclick="this.classList.toggle(\'zoom\')">'
+            f'<image href="{escape(view["image_file"])}" width="{width}" height="{height}"/>{"".join(marks)}</svg></div></details>'
             f'<p>{escape(view["warnings"])}</p><table><thead><tr><th>序号</th><th>规格</th><th>长度mm</th><th>view_tags</th><th>状态</th><th>标签ID与依据</th></tr></thead>'
             f'<tbody>{"".join(body)}</tbody></table></section>')
     text = f'''<!doctype html><html lang="zh"><meta charset="utf-8"><title>固定标签第二阶段</title>
 <style>body{{font-family:system-ui;margin:24px;color:#172e43;line-height:1.6}}table{{border-collapse:collapse;width:100%;font-size:14px}}
-td,th{{border:1px solid #ccd6df;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef4f9}}pre{{white-space:pre-wrap;max-width:650px}}section{{margin:35px 0}}</style>
+td,th{{border:1px solid #ccd6df;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef4f9}}pre{{white-space:pre-wrap;max-width:650px}}section{{margin:35px 0}}
+.viewport{{max-height:75vh;overflow:auto;border:1px solid #ccd6df}}svg{{width:100%;display:block}}svg.zoom{{width:var(--native-width)}}
+.label rect{{fill:none;stroke-width:2}}.label text{{fill:#a00088;paint-order:stroke;stroke:white;stroke-width:3px;font-weight:bold}}
+.label:target rect{{fill:yellow;fill-opacity:.5;stroke:red;stroke-width:5}}</style>
 <h1>固定标签第二阶段 · 尺寸台账</h1><p>标签、规格、所属视图与已有view_tags全部继承第一阶段。未做跨视图去重，组合未展开。</p>
 <p>{escape(report['summary'])}</p><p>MODEL_DERIVED表示模型解释及本地计算结果，不是人工确认。UNKNOWN保留台账，不补零、不删行。</p>
 <p><a href="stage_two.xlsx">下载Excel</a> · <a href="members.csv">CSV台账</a> · <a href="stage_two.json">完整JSON与候选审计</a></p>
