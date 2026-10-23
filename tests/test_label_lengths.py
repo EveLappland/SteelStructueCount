@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from app.label_facts import digest, in_view, load
 from app.label_length_contracts import LabelLength, check_ids, evaluate, different
 from app.label_length_context import prepare, frame_input
+from app.label_length_workflow import review_batches
 
 
 FACTS = [{'id':'dim-span','values_mm':[7200]}, {'id':'dim-end','values_mm':[2100]},
@@ -23,6 +24,15 @@ def claim(kind='STRAIGHT', dimensions=None):
 
 
 class LabelLengthTests(unittest.TestCase):
+    def test_reviews_keep_every_target_once_in_small_direction_batches(self):
+        labels=[{'label_id':str(i),'direction':[0,1] if i%2 else [1,0],
+                 'bbox_view':[i/30,.2,i/30+.01,.3]} for i in range(17)]
+        targets={str(i) for i in range(15)}
+        batches=review_batches({'labels':labels},targets,4)
+        flat=[i for batch in batches for i in batch]
+        self.assertEqual(set(flat),targets)
+        self.assertEqual(len(flat),len(targets))
+        self.assertTrue(all(len(batch)<=4 for batch in batches))
     def test_splice_subtraction_uses_native_operands(self):
         a = claim(dimensions=[[{'text_id':'dim-span','factor':1},{'text_id':'dim-end','factor':-1}]])
         result = evaluate(a,FACTS)

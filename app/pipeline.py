@@ -81,6 +81,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                                  'image_max_dimension':entry.get('image_max_dimension',2600),
                                  'image_dpi':entry.get('image_dpi'),
                                  'text_only':bool(entry.get('text_only')),
+                                 **({'image_context':entry['image_context']} if entry.get('image_context') else {}),
                                  **({'prepared_image_hash':hashlib.sha256(entry['prepared_data_uri'].encode()).hexdigest()} if entry.get('prepared_data_uri') else {}),
                                  'image_hash':hashlib.sha256(Path(entry['image_path']).read_bytes()).hexdigest() if entry.get('image_path') else None,
                                  'detail_hashes':[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in entry.get('detail_paths',[])],
@@ -105,6 +106,8 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
                     # Legacy responses have no request signature; only adopt unchanged uploads.
                     continue
                 raw=json.loads(saved.read_text(encoding='utf-8'))
+                if raw.get('choices') and raw['choices'][0].get('finish_reason')=='length':
+                    continue
                 if not saved_metadata.is_file() and raw.get('model')!=model:
                     continue
                 result=parse_model_content(response_content(raw),contract,entry,audit)
@@ -148,7 +151,7 @@ def model_call(client, model, prompt, entry, response_path, contract, *, reuse_s
         if contract in (MemberResponse, ImageMemberResponse):content.reverse()
         if entry.get('detail_paths') and not entry.get('text_only'):
             primary=next(item for item in content if item['type']=='image_url')
-            content=[primary,{'type':'text','text':'第一张为完整视图，后续为同一视图的高清网格/局部图，对应 image_map。它们是同一批构件，只统计一次；用全图确定关系，用局部读清标签和端部。'}]+[
+            content=[primary,{'type':'text','text':entry.get('image_context') or '第一张为完整视图，后续为同一视图的高清网格/局部图，对应 image_map。它们是同一批构件，只统计一次；用全图确定关系，用局部读清标签和端部。'}]+[
                 {'type':'image_url','image_url':{'url':render_data_uri({'image_path':path})}}
                 for path in entry['detail_paths']]+[{'type':'text','text':prompt+'\nJSON schema:\n'+schema}]
         response = client.chat.completions.create(model=model,**options,response_format={'type':'json_object'}, messages=[

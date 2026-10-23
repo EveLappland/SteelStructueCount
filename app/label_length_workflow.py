@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import os
 from pathlib import Path
 from shutil import copy2
 import time
@@ -42,6 +43,23 @@ def prompt_file(name):
     return (Path(__file__).parent/'prompts'/name).read_text(encoding='utf-8')
 
 
+def review_batches(view, targets, size):
+    """Keep direction/locality together without mixing independent label IDs."""
+    groups = {}
+    for label in view['labels']:
+        if label['label_id'] not in targets:
+            continue
+        dx,dy = label['direction']
+        direction = 'H' if abs(dx)>.98 else ('V' if abs(dy)>.98 else 'D')
+        groups.setdefault(direction,[]).append(label)
+    batches = []
+    for direction,labels in sorted(groups.items()):
+        labels.sort(key=lambda l:(l['bbox_view'][1 if direction=='H' else 0],l['label_id']))
+        for start in range(0,len(labels),size):
+            batches.append([l['label_id'] for l in labels[start:start+size]])
+    return batches
+
+
 def run(facts_path, output, settings, emit=print, *, call_api=False, resume=False, view_ids=()):
     from .pipeline import model_call, OpenAI
     facts_path, output = Path(facts_path).resolve(), Path(output).resolve()
@@ -54,8 +72,13 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
     output.mkdir(parents=True, exist_ok=True)
     limit = view_concurrency(settings)
     effort = settings.get('reasoning_effort', 'high')
+    batch_size = settings.get('review_batch_size',os.getenv('LABEL_LENGTH_REVIEW_BATCH_SIZE','6'))
+    if isinstance(batch_size,bool) or not str(batch_size).isdigit() or not 1<=int(batch_size)<=12:
+        raise ValueError('LABEL_LENGTH_REVIEW_BATCH_SIZE需要1至12的整数')
+    batch_size = int(batch_size)
     manifest = {'stage_one_sha256': bundle['bundle_sha256'], 'view_ids': [v['view_id'] for v in selected],
-                'reasoning_effort': effort, 'algorithm': 'label-lengths/v1'}
+                'reasoning_effort': effort, 'review_batch_size':batch_size,
+                'algorithm': 'label-lengths/v2-batched-reviews'}
     path = output/'input_manifest.json'
     if path.exists():
         if not resume or json.loads(path.read_text(encoding='utf-8')) != manifest:
@@ -70,7 +93,7 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
     responses, trace = output/'responses'/attempt, output/'runs'/attempt
     items, ready, pending = {}, deque(), {}
 
-    def make_request(item, role, targets, *, tile=None, payload=None):
+    def make_request(item, role, targets, *, tile=None, payload=None, batch_id=''):
         view = item['view']
         labels = [l for l in view['labels'] if l['label_id'] in targets]
         metadata = {'stage_one': frame_input(view,tile,item['plan']), 'target_labels': [label_input(l,tile,item['plan']) for l in labels],
@@ -91,7 +114,7 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
             metadata['context_images'] = [{'image_number': i+2,'bbox_view':c['bbox_view']} for i,c in enumerate(context)]
         prompt = prompt_file('label_length_common.md')+'\n'+prompt_file(f'label_length_{role}.md')
         prompt += '\n输入：\n'+json.dumps(metadata,ensure_ascii=False,sort_keys=True)
-        task = Request(view['view_id'],role,tuple(l['label_id'] for l in labels),entry,prompt,tile['id'] if tile else '')
+        task = Request(view['view_id'],role,tuple(l['label_id'] for l in labels),entry,prompt,tile['id'] if tile else batch_id)
         audit.text(trace/view['view_id']/f'{role}_{task.tile_id or "all"}.prompt.txt', prompt)
         return task
 
@@ -186,8 +209,12 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
                 targets.append(identity); questions[identity] = reasons
         if targets:
             item['state'] = 'expert'
-            ready.append(make_request(item,'expert',targets,payload={'target_questions':questions,
-                'previous_candidates':{i:item['candidates'][i] for i in targets}}))
+            batches = review_batches(item['view'],set(targets),batch_size)
+            item['expert_remaining'] = len(batches)
+            for index,batch in enumerate(batches):
+                ready.append(make_request(item,'expert',batch,batch_id=f'batch{index:03d}',payload={
+                    'target_questions':{i:questions[i] for i in batch},
+                    'previous_candidates':{i:item['candidates'][i] for i in batch}}))
         else:
             finish(item)
 
@@ -206,9 +233,12 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
                 item['chosen'][identity] = ('expert',expert)
         if conflicts:
             item['state'] = 'arbiter'
-            ready.append(make_request(item,'arbiter',conflicts,payload={
-                'candidates':{i:{'MASTER':item['candidates'][i]['master'],
-                                 'EXPERT':item['candidates'][i]['expert']} for i in conflicts}}))
+            batches = review_batches(item['view'],set(conflicts),batch_size)
+            item['arbiter_remaining'] = len(batches)
+            for index,batch in enumerate(batches):
+                ready.append(make_request(item,'arbiter',batch,batch_id=f'batch{index:03d}',payload={
+                    'candidates':{i:{'MASTER':item['candidates'][i]['master'],
+                                     'EXPERT':item['candidates'][i]['expert']} for i in batch}}))
         else:
             finish(item)
 
@@ -229,7 +259,9 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
             after_master(item)
         elif role == 'expert':
             if payload: store_candidates(item,'expert',payload)
-            after_expert(item)
+            item['expert_remaining'] -= 1
+            if item['expert_remaining'] == 0:
+                after_expert(item)
         else:
             if payload:
                 for decision in payload['decisions']:
@@ -249,7 +281,9 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
                 for identity in task.targets:
                     role,candidate = item['chosen'][identity]
                     item['chosen'][identity] = ('unresolved_conflict_fallback:'+role,candidate)
-            finish(item)
+            item['arbiter_remaining'] -= 1
+            if item['arbiter_remaining'] == 0:
+                finish(item)
 
     def request(task):
         contract = DecisionReply if task.role == 'arbiter' else LengthReply
