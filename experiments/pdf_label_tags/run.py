@@ -124,4 +124,3 @@ def main():
     audit.event('EXPERIMENT_COMPLETED', counts=report['summary'], acceptance=checks)
     print(json.dumps(report['summary'], ensure_ascii=False), flush=True)
     print(output / 'index.html', flush=True)
-
