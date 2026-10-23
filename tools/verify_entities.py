@@ -18,7 +18,8 @@ def verify(path):
     path=Path(path).resolve()
     if path.is_dir():path/='stage_three.json'
     report=json.loads(path.read_text(encoding='utf-8'))
-    if report['format']!='cross-view-entities/v1':raise ValueError('未知的第三阶段格式')
+    if report['format'] not in ('cross-view-entities/v1','cross-view-entities/v2'):raise ValueError('未知的第三阶段格式')
+    matching_only=report['format']=='cross-view-entities/v2'
     observations,views,sources=read_inputs([s['path'] for s in report['sources']])
     if sources!=report['sources']:raise ValueError('第三阶段来源文件发生变化')
     entities=report['entities']; ids=[e['id'] for e in entities]
@@ -31,14 +32,23 @@ def verify(path):
         if candidate is not None:
             if source not in entity['observation_ids']:raise ValueError('长度来源不属于实体')
             row=observations[source]
+            if matching_only and (candidate!=row['measurement'] or entity['length_mm']!=row['length_mm']):
+                raise ValueError('只匹配模式不得生成新尺寸或修改来源测量')
             if candidate['answer']['label_id']!=row['label_id']:raise ValueError('测量标签ID不一致')
             recalculated=evaluate(candidate['answer'],views[row['view_uid']]['text_facts'])
             if recalculated!=candidate or recalculated['length_mm']!=entity['length_mm']:
                 raise ValueError('最终长度无法按原始文字重新计算')
         elif entity['length_mm'] is not None:
             raise ValueError('已知长度没有尺寸证据')
+        elif matching_only and any(observations[i]['length_mm'] is not None for i in entity['observation_ids']):
+            raise ValueError('只匹配模式不得合并后抹除已有长度')
         for identity in entity['observation_ids']:
             row=observations[identity]
+            if matching_only and len(set(row['view_tags']))==1 and (
+                    len(entity['observation_ids'])!=1 or entity['length_mm']!=row['length_mm']):
+                raise ValueError('单标签观察必须独立保留原长度')
+            if matching_only and len(entity['observation_ids'])==1 and entity['length_mm']!=row['length_mm']:
+                raise ValueError('独立保留的观察不得改变长度')
             expected_maps.append({'observation_id':identity,'label_id':row['label_id'],'view_uid':row['view_uid'],
                 'entity_id':entity['id'],'original_length_mm':row['length_mm'],'entity_length_mm':entity['length_mm'],
                 'changed':row['length_mm']!=entity['length_mm']})
@@ -54,7 +64,7 @@ def verify(path):
         raise ValueError('实体数量汇总不一致')
     return {'every_observation_assigned_once':True,'per_view_counts_preserved':True,
         'stage_two_sources_unchanged':True,'images_unchanged':True,'entity_measurement_arithmetic_verified':True,
-        'component_expansion_verified':True,'input_observations':len(observations),
+        'component_expansion_verified':True,'matching_only_mode':matching_only,'input_observations':len(observations),
         'entity_quantity':sum(e['member_cnt'] for e in entities),'single_component_quantity':len(components),
         'limits':'Data provenance, conservation and arithmetic only; not a spatial/engineering accuracy evaluation.'}
 

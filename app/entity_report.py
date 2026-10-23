@@ -72,8 +72,9 @@ def export(directory,report,observations):
     page=f'''<!doctype html><html lang="zh"><meta charset="utf-8"><title>第三阶段 · 跨视图实体归约</title>
 <style>body{{font-family:system-ui;margin:24px;color:#183047;line-height:1.6}}table{{border-collapse:collapse;width:100%;font-size:14px}}
 th,td{{border:1px solid #ccd6df;padding:8px;vertical-align:top;text-align:left}}th{{background:#eef4f9}}pre{{white-space:pre-wrap;max-width:700px}}</style>
-<h1>第三阶段 · 跨视图关联、长度仲裁与实体归约</h1>
+<h1>第三阶段 · 跨视图匹配、消歧与去重</h1>
 <p>保留全部原始标签；同一视图不同标签不压为一根。匹配组数量保留，组内无法区分时不编造逐根配对。自动完成，无人工修改台账。</p>
+<p>第三阶段只选择已有长度来源，不自由重算。单面标签与没有跨视图候选的观察独立保留第二阶段原值。</p>
 <p>{esc(report['summary'])}</p><p>{esc(report['conservation'])}</p>
 <p><a href="stage_three.xlsx">下载Excel</a> · <a href="entities.csv">实体CSV</a> · <a href="stage_three.json">完整JSON</a> · <a href="quantity_summary.json">展开单根汇总</a></p>
 <p>UNKNOWN保留数量。FALLBACK表示未完成自动裁决，保留独立观察，可能仍有重复；已填数值也不等于工程准确率。</p>

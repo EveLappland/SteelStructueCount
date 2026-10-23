@@ -4,7 +4,7 @@
 
 固定标签第二阶段：见 [尺寸识别说明](docs/label-constrained-lengths.md)，使用 `tools/test_label_lengths.py` 运行网格子代理、总代理和按需专家/仲裁。
 
-固定标签第三阶段：见 [跨视图实体归约说明](docs/cross-view-entities.md)，使用 `tools/test_entity_reconciliation.py` 接收多份第二阶段结果，自动关联、核验长度与分段、去重并导出单根台账。
+固定标签第三阶段：见 [跨视图实体归约说明](docs/cross-view-entities.md)，使用 `tools/test_entity_reconciliation.py` 接收多份第二阶段结果，只匹配、去重与已有长度消歧；单面标签直接保留，不自由重算，导出完整单根台账。
 
 从钢结构 PDF 建造布置图建立规格、名义长度和数量台账。FastAPI、原生 JavaScript、PyMuPDF、OpenAI 兼容 API、SQLite 和 openpyxl。默认自动执行三个阶段并导出，也可逐阶段暂停。
 

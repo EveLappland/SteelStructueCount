@@ -11,7 +11,7 @@ from PIL import Image
 from app.entity_reduction import (compatible, conservation, exact_groups, find_cases,
     independent, validate_reply)
 from app.entity_report import component_rows
-from app.entity_workflow import length_batches
+from app.entity_workflow import compact_observation, run
 from app.entity_inputs import read_inputs
 from app.label_facts import FORMAT, digest
 from app.label_length_contracts import evaluate
@@ -29,8 +29,8 @@ def observation(identity,view,plane,other,length=7200,spec='HEA220'):
             'direction':[1,0],'kind':'STRAIGHT','selected_role':'expert'}
 
 
-def claim(ids,source=None,revision=None):
-    return {'observation_ids':ids,'length_source_id':source,'revision':revision,
+def claim(ids,source=None):
+    return {'observation_ids':ids,'length_source_id':source,
             'reason':'Corresponding endpoints and source planes'}
 
 
@@ -40,13 +40,14 @@ def local_stage_two(directory, source_hash):
     Image.new('RGB',(100,100),'white').save(image)
     row=observation('local-label','local-view','LEVEL','LINE')
     label={k:row[k] for k in ('label_id','spec','component_multiplier','member_cnt','view_tags','bbox_view','direction')}
-    native={'view_id':'local-view','plane_name':'LEVEL','image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
+    native={'view_id':'local-view','title':'Generic LEVEL plan','plane_name':'LEVEL','image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
             'image_size_px':[100,100],'labels':[label],'text_facts':[{'id':'dimension','values_mm':[7200]}]}
     bundle={'format':FORMAT,'source_sha256':source_hash,'views':[native]};bundle['bundle_sha256']=digest(bundle)
     selected={k:row[k] for k in ('label_id','spec','member_cnt','component_multiplier','view_tags','bbox_view','length_mm','kind')}
     selected.update({k:row['measurement']['answer'][k] for k in ('endpoints','basis','issue')})
     selected['dimension_values_mm']=row['measurement']['dimension_values_mm']
-    selected.update(view_id='local-view',formulas=row['measurement']['formulas'],candidates={'local':row['measurement']})
+    selected.update(view_id='local-view',view_title='Generic LEVEL plan',status='MODEL_DERIVED',
+                    selected_role='local',formulas=row['measurement']['formulas'],candidates={'local':row['measurement']})
     result={'format':'label-lengths/v1','stage_one_sha256':bundle['bundle_sha256'],
             'views':[{'view_id':'local-view','state':'completed','image_file':'original.png'}],'members':[selected]}
     (directory/'stage_one_facts.snapshot.json').write_text(json.dumps(bundle),encoding='utf-8')
@@ -107,7 +108,7 @@ class EntityTests(unittest.TestCase):
         b=observation('b','elev','LINE','LEVEL',6900)
         rows={'a':a,'b':b}; cases,_=find_cases(rows)
         self.assertEqual(len(cases),1)
-        entities=validate_reply({'entities':[claim(['a','b'],'b')]},cases[0],rows,{})
+        entities=validate_reply({'entities':[claim(['a','b'],'b')]},cases[0],rows)
         self.assertEqual(entities[0]['length_mm'],6900)
         self.assertEqual(entities[0]['member_cnt'],1)
         conservation(entities,rows)
@@ -127,36 +128,31 @@ class EntityTests(unittest.TestCase):
               'b':observation('b','one','LEVEL','LINE')}
         case={'kind':'MATCH','observation_ids':['a','b']}
         with self.assertRaisesRegex(ValueError,'同一视图'):
-            validate_reply({'entities':[claim(['a','b'],'a')]},case,rows,{})
+            validate_reply({'entities':[claim(['a','b'],'a')]},case,rows)
         rows['b']['view_uid']='two'
         with self.assertRaisesRegex(ValueError,'相互对应'):
-            validate_reply({'entities':[claim(['a','b'],'a')]},case,rows,{})
+            validate_reply({'entities':[claim(['a','b'],'a')]},case,rows)
 
     def test_partition_rejects_missing_duplicate_and_extra_observations(self):
         rows={'a':observation('a','one','LEVEL','LINE')}
-        case={'kind':'LENGTH','observation_ids':['a']}
+        case={'kind':'MATCH','observation_ids':['a']}
         for groups in ([],[claim(['a']),claim(['a'])],[claim(['outside'])]):
-            with self.assertRaises(ValueError):validate_reply({'entities':groups},case,rows,{})
+            with self.assertRaises(ValueError):validate_reply({'entities':groups},case,rows)
 
-    def test_dimension_revision_computes_legs_locally_and_enforces_text_scope(self):
+    def test_recalculation_fields_and_length_tasks_are_rejected(self):
         rows={'a':observation('a','one','LEVEL','LINE',None)}
-        case={'kind':'LENGTH','observation_ids':['a']}
-        measurement={'label_id':'a','kind':'BRACE','dimensions':[
-            [{'text_id':'run','factor':1}],[{'text_id':'rise','factor':1}]],
-            'endpoints':['node C','node D'],'basis':'Corresponding horizontal and vertical node dimensions','issue':''}
-        revision={'observation_id':'a','measurement':measurement}
-        views={'one':{'text_facts':[{'id':'run','values_mm':[2500]},{'id':'rise','values_mm':[3700]}]}}
-        entities=validate_reply({'entities':[claim(['a'],revision=revision)]},case,rows,views)
-        self.assertEqual(entities[0]['length_mm'],4465.42)
-        measurement['dimensions'][0][0]['text_id']='other-view-text'
-        with self.assertRaisesRegex(ValueError,'尺寸引用'):
-            validate_reply({'entities':[claim(['a'],revision=revision)]},case,rows,views)
+        case={'kind':'MATCH','observation_ids':['a']}
+        for field,value in [('revision',None),('length_mm',1234),('measurement',{}),('dimensions',[])]:
+            c=claim(['a']);c[field]=value
+            with self.assertRaises(ValueError):validate_reply({'entities':[c]},case,rows)
+        with self.assertRaisesRegex(ValueError,'重算'):
+            validate_reply({'entities':[claim(['a'])]},{**case,'kind':'LENGTH'},rows)
 
     def test_known_length_source_must_belong_to_entity(self):
         rows={'a':observation('a','one','LEVEL','LINE')}
         with self.assertRaises(ValueError):
             validate_reply({'entities':[claim(['a'],'elsewhere')]},
-                           {'kind':'LENGTH','observation_ids':['a']},rows,{})
+                           {'kind':'MATCH','observation_ids':['a']},rows)
 
     def test_conservation_catches_double_assignment_and_quantity_collapse(self):
         rows={i:observation(i,'one','LEVEL','LINE') for i in ('a','b')}
@@ -175,17 +171,38 @@ class EntityTests(unittest.TestCase):
         self.assertTrue(all(c['length_mm'] is None for c in first))
         self.assertEqual(entities[0]['member_cnt'],1)
 
-    def test_length_batches_are_small_and_never_mix_view_or_direction(self):
-        rows={}
-        for i in range(14):
-            identity=str(i);row=observation(identity,'one' if i<10 else 'two','LEVEL','LINE')
-            row['direction']=[1,0] if i%2 else [0,1];rows[identity]=row
-        batches=length_batches(rows,rows,3)
-        self.assertEqual(sum(len(b['observation_ids']) for b in batches),14)
-        for batch in batches:
-            self.assertLessEqual(len(batch['observation_ids']),3)
-            self.assertEqual(len({rows[i]['view_uid'] for i in batch['observation_ids']}),1)
-            self.assertEqual(len({tuple(rows[i]['direction']) for i in batch['observation_ids']}),1)
+    def test_single_tag_bypasses_matching_even_when_unknown_or_with_issue(self):
+        rows={'a':observation('a','one','LEVEL','LINE',None),'b':observation('b','two','LINE','LEVEL')}
+        rows['a']['view_tags']=['LEVEL'];rows['a']['issue']='Endpoint uncertain'
+        cases,orphans=find_cases(rows)
+        self.assertEqual(cases,[]);self.assertEqual(set(orphans),{'a','b'})
+
+    def test_independent_keep_cannot_clear_known_length(self):
+        rows={'a':observation('a','one','LEVEL','LINE')}
+        entities=validate_reply({'entities':[claim(['a'])]},{'kind':'MATCH','observation_ids':['a']},rows)
+        self.assertEqual(entities[0]['length_mm'],7200)
+        self.assertEqual(entities[0]['measurement'],rows['a']['measurement'])
+
+    def test_matched_entity_cannot_erase_existing_length(self):
+        rows={'a':observation('a','one','LEVEL','LINE'), 'b':observation('b','two','LINE','LEVEL',None)}
+        with self.assertRaisesRegex(ValueError,'抹除'):
+            validate_reply({'entities':[claim(['a','b'])]}, {'kind':'MATCH','observation_ids':['a','b']},rows)
+
+    def test_full_spatial_description_reaches_matcher_without_expression_output(self):
+        r=observation('a','one','LEVEL','LINE');r.update(axis_context={},basis='position evidence '*100)
+        r['endpoints']=['grid Q to splice P','splice P to node R']
+        compact=compact_observation(r)
+        self.assertEqual(compact['basis'],r['basis']);self.assertEqual(compact['endpoints'],r['endpoints'])
+        self.assertNotIn('current_measurement',compact)
+
+    def test_local_run_keeps_independent_observation_without_review_task(self):
+        with TemporaryDirectory() as folder:
+            source=local_stage_two(Path(folder)/'input','a'*64)
+            result=run([source],Path(folder)/'output',{},lambda _:None,call_api=False)
+            self.assertEqual(result['cases'],[])
+            self.assertEqual(result['summary']['api_request_attempts'],0)
+            self.assertEqual(result['entities'][0]['length_mm'],7200)
+            self.assertEqual(result['entities'][0]['method'],'INDEPENDENT')
 
 
 if __name__=='__main__':unittest.main()

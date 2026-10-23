@@ -8,19 +8,12 @@ from itertools import combinations
 from pydantic import Field
 from .domain_base import Contract
 from .label_facts import digest
-from .label_length_contracts import LabelLength, evaluate
 from .profiles import section
-
-
-class Revision(Contract):
-    observation_id: str
-    measurement: LabelLength
 
 
 class EntityClaim(Contract):
     observation_ids: list[str] = Field(min_length=1)
     length_source_id: str | None
-    revision: Revision | None
     reason: str = Field(min_length=1, max_length=2400)
 
 
@@ -34,6 +27,7 @@ def compatible(a,b):
     Same-plane copies and symmetry are not independent matching evidence.
     """
     return (a['view_uid'] != b['view_uid'] and a['source_plane'] != b['source_plane']
+            and len(set(a['view_tags']))>1 and len(set(b['view_tags']))>1
             and section(a['spec']) == section(b['spec'])
             and a['source_plane'] in b['view_tags'] and b['source_plane'] in a['view_tags'])
 
@@ -43,7 +37,8 @@ def find_cases(observations):
     neighbors = {i:set() for i in observations}
     by_spec = defaultdict(list)
     for identity,row in observations.items():
-        by_spec[section(row['spec'])].append(identity)
+        if len(set(row['view_tags']))>1:
+            by_spec[section(row['spec'])].append(identity)
     for ids in by_spec.values():
         for a,b in combinations(ids,2):
             if compatible(observations[a],observations[b]):
@@ -115,8 +110,10 @@ def exact_groups(case, observations):
     return result
 
 
-def validate_reply(payload, case, observations, views):
+def validate_reply(payload, case, observations):
     """Validate a complete partition before adopting any model conclusion."""
+    if case['kind']!='MATCH':
+        raise ValueError('第三阶段仅允许匹配消歧，不执行长度重算任务')
     reply=EntityReply.model_validate(payload).model_dump()
     targets=case['observation_ids']; assigned=[i for e in reply['entities'] for i in e['observation_ids']]
     if Counter(assigned)!=Counter(targets):
@@ -128,23 +125,20 @@ def validate_reply(payload, case, observations, views):
             raise ValueError('同一视图的不同钢材标签不得合并为一根')
         if any(not compatible(observations[a],observations[b]) for a,b in combinations(ids,2)):
             raise ValueError('跨视图匹配缺少规格一致及双方所属面的相互对应，不得按对称性合并')
-        if case['kind']=='LENGTH' and len(ids)!=1:
-            raise ValueError('独立长度补证任务不能去重或合并标签')
-        revision,source,candidate=claim['revision'],claim['length_source_id'],None
-        if revision is not None:
-            if source is not None or revision['observation_id'] not in ids:
-                raise ValueError('修订与既有长度来源互斥，修订必须引用本实体观察')
-            source=revision['observation_id']; r=observations[source]
-            if revision['measurement']['label_id']!=r['label_id']:
-                raise ValueError('修订尺寸不能更换标签ID')
-            candidate=evaluate(revision['measurement'],views[r['view_uid']]['text_facts'])
-            if candidate['checks'] or (candidate['length_mm'] is not None and candidate['length_mm']<=0):
-                raise ValueError('修订的本地尺寸引用/算术校验失败：'+'; '.join(candidate['checks']))
-        elif source is not None:
+        source,candidate=claim['length_source_id'],None
+        if source is not None and source not in ids:
+            raise ValueError('长度来源必须属于本实体')
+        if len(ids)==1:
+            # Keeping an observation independent cannot alter or erase its length.
+            entities.extend(independent(ids,observations,claim['reason'],method='AI_MATCH'))
+            continue
+        if source is not None:
             if source not in ids or observations[source]['measurement'] is None or observations[source]['length_mm'] is None:
                 raise ValueError('长度来源必须是本实体具有有效尺寸依据的观察')
             candidate=observations[source]['measurement']
-        entities.append(make_entity(ids, observations,method='AI_MATCH' if case['kind']=='MATCH' else 'AI_LENGTH',
+        elif any(r['length_mm'] is not None for r in rows):
+            raise ValueError('匹配实体存在已有长度时必须选择来源；无法消歧可保留独立观察，不得抹除原长度')
+        entities.append(make_entity(ids, observations,method='AI_MATCH',
             reason=claim['reason'],candidate=candidate,source_id=source))
     return entities
 

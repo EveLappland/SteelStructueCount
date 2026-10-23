@@ -1,5 +1,5 @@
 """Automatic third stage for fixed-label length ledgers; bounded, resumable calls."""
-from collections import deque, defaultdict
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 import hashlib
@@ -29,29 +29,12 @@ def option(settings, key, env, default, maximum=None):
     return int(value)
 
 
-def length_batches(ids, observations, size):
-    groups=defaultdict(list)
-    for identity in ids:
-        r=observations[identity]
-        # Unrelated horizontal/vertical strips are never put in the same task.
-        dx,dy=r['direction']; direction='H' if abs(dx)>.98 else ('V' if abs(dy)>.98 else 'D')
-        groups[(r['view_uid'],direction)].append(identity)
-    result=[]
-    for (_,direction),local in sorted(groups.items()):
-        local.sort(key=lambda i:(observations[i]['bbox_view'][1 if direction=='H' else 0],i))
-        for start in range(0,len(local),size):
-            targets=local[start:start+size]
-            result.append({'id':'length-'+digest(targets)[:16],'kind':'LENGTH','observation_ids':targets})
-    return result
-
-
 def compact_observation(row):
     value={k:deepcopy(row[k]) for k in ('observation_id','label_id','view_uid','source_plane','spec',
         'view_tags','bbox_view','direction','axis_context','length_mm','kind','endpoints','status')}
-    value.update(issue=row.get('issue','')[:700],basis=row.get('basis','')[:900])
-    candidate=row.get('measurement')
-    if candidate:
-        value['current_measurement']=candidate['answer']
+    # Keep full spatial descriptions: a shared spec/tag/length key is not identity.
+    value.update(issue=row.get('issue',''),basis=row.get('basis',''),
+                 review_notes=deepcopy(row.get('review_notes',[])))
     return value
 
 
@@ -61,12 +44,11 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
     observations,views,sources=read_inputs(paths)
     if any(output==Path(s['path']).parent or output in Path(s['path']).parents for s in sources):
         raise ValueError('第三阶段输出目录不能覆盖输入目录或其父目录')
-    size=option(settings,'batch_size','ENTITY_REVIEW_BATCH_SIZE',6,12)
     budget=option(settings,'max_calls','ENTITY_MAX_CALLS',24)
     limit=view_concurrency(settings); effort=settings.get('reasoning_effort','high')
     prompt_path=Path(__file__).parent/'prompts/entity_reconciliation.md'
     base_prompt=prompt_path.read_text(encoding='utf-8')
-    manifest={'algorithm':'cross-view-entities/v1','sources':sources,'batch_size':size,
+    manifest={'algorithm':'cross-view-entities/v2-matching-only','sources':sources,
               'max_calls':budget,'reasoning_effort':effort,'prompt_sha256':hashlib.sha256(base_prompt.encode()).hexdigest(),
               'schema':EntityReply.model_json_schema()}
     output.mkdir(parents=True,exist_ok=True); manifest_path=output/'input_manifest.json'
@@ -94,17 +76,11 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
             results[case['id']]=exact; states[case['id']]={'state':'RULE_MATCH','kind':case['kind']}
         else:
             ready.append((case,0,None))
-    review=[]
     for identity in orphans:
         r=observations[identity]
-        if (r['length_mm'] is None or r.get('issue') or r.get('local_checks') or r.get('review_notes')
-                or r['status']!='MODEL_DERIVED' or (r['kind']=='BRACE' and r['selected_role']=='master')):
-            review.append(identity)
-        else:
-            results['single-'+digest(identity)[:16]]=independent([identity],observations,
-                '无跨视图所属面对应；保留第二阶段独立观察。',method='INDEPENDENT')
-    for case in length_batches(review,observations,size):
-        cases.append(case); ready.append((case,0,None))
+        reason=('仅一个所属面标签，直接保留第二阶段观察及原长度，不送AI。' if len(set(r['view_tags']))==1
+                else '无跨视图所属面对应；保留第二阶段独立观察及原长度。')
+        results['single-'+digest(identity)[:16]]=independent([identity],observations,reason,method='INDEPENDENT')
     def make_request(case,retry,error):
         targets=case['observation_ids']; local_views=sorted({observations[i]['view_uid'] for i in targets})
         image_map=[]; image_paths=[]; facts=[]
@@ -139,7 +115,7 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
             with OpenAI(base_url=base,api_key=key,timeout=600,max_retries=0) as client:
                 payload=model_call(client,model,prompt,entry,responses/f"{entry['id']}.json",EntityReply,
                     reuse_saved=resume,emit=emit,audit=audit,reasoning_effort=effort)
-            entities=validate_reply(payload,case,observations,views)
+            entities=validate_reply(payload,case,observations)
             return entities,None
         except Exception as exc:
             return None,audit.scrub(str(exc))
@@ -166,12 +142,12 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
             'fallback_entity_quantity':sum(e['member_cnt'] for e in entities if e['method']=='FALLBACK'),
             'api_request_attempts':requests,'request_concurrency':limit,'observed_peak_requests':peak,
             'elapsed_seconds':round(time.monotonic()-started,3)}
-        result={'format':'cross-view-entities/v1','sources':sources,'views':[{k:v[k] for k in
+        result={'format':'cross-view-entities/v2','mode':'MATCHING_ONLY','sources':sources,'views':[{k:v[k] for k in
             ('uid','title','plane_name','image_file')} for v in views.values()],
             'entities':entities,'observation_entity_map':mappings,'cases':[
                 {**c,**states.get(c['id'],{'state':'PENDING'})} for c in cases],
             'summary':summary,'conservation':check,
-            'limits':'Automatic model/rule conclusions; arithmetic and observation conservation checked, not an engineering accuracy certificate. Combinations expanded once only in component export.'}
+            'limits':'Matching/disambiguation only: lengths can only come from existing stage-two observations; single-tag and unmatched observations retained unchanged. Combinations expanded once only in component export.'}
         write_json(output/'stage_three.json',result)
         return result
 

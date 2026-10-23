@@ -19,9 +19,8 @@ def main():
     p.add_argument('--reasoning-effort',choices=['low','high','max'],default='high')
     p.add_argument('--max-concurrency',type=int)
     p.add_argument('--max-calls',type=int)
-    p.add_argument('--batch-size',type=int)
     args=p.parse_args(); load_dotenv(ROOT/'.env')
-    settings={k:v for k,v in vars(args).items() if k in ('reasoning_effort','max_concurrency','max_calls','batch_size') and v is not None}
+    settings={k:v for k,v in vars(args).items() if k in ('reasoning_effort','max_concurrency','max_calls') and v is not None}
     result=run(args.stage_two,args.output,settings,lambda x:print(x,flush=True),call_api=args.api,resume=args.resume)
     print(json.dumps(result['summary'],ensure_ascii=False),flush=True)
     print(args.output.resolve()/'index.html',flush=True)
