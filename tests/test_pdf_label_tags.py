@@ -24,6 +24,29 @@ def label(box=(.3, .493, .36, .497), direction=(1, 0)):
     return steel_occurrences(page([text('steel', 'HEM420', box, direction)]))[0]
 
 
+def vector(identity, x0, y0, x1, y1, dashes=None):
+    return {'id': identity, 'bbox': [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
+            'points': [[x0, y0], [x1, y1]], 'style': {'dashes': dashes}}
+
+
+def bubble_example(mirrored=False, gap=False):
+    vectors = [vector('border-top', .79, .493, .91, .493),
+               vector('border-bottom', .79, .507, .91, .507),
+               vector('border-bottom-overprint', .79, .507, .91, .507),
+               vector('connector', .77, .5, .795, .5, '[3 1] 0'),
+               vector('member', .5, .5, .74 if gap else .768, .5),
+               vector('other-level', .5, .515, .768, .515)]
+    texts = [text('axis', 'EL.42.000(TOS)', [.8, .495, .9, .505]),
+             text('member-label', 'HEM420', [.6, .491, .64, .495])]
+    if mirrored:
+        for item in vectors:
+            item['points'] = [[1-x, y] for x, y in item['points']]
+        for item in texts+vectors:
+            a, b, c, d = item['bbox']
+            item['bbox'] = [1-c, b, 1-a, d]
+    return page(texts, vectors)
+
+
 class NativeLabelTagTests(unittest.TestCase):
     def test_equal_specs_at_different_positions_are_not_deduplicated(self):
         rows = steel_occurrences(page([text('s1', 'HEM420', [.2, .2, .3, .21]),
@@ -72,6 +95,36 @@ class NativeLabelTagTests(unittest.TestCase):
         refs = reference_lines(p, dict(title_id='title', bbox=[0, 0, 1, 1]))
         self.assertEqual(refs[0]['name'], 'R7')
         self.assertEqual(refs[0]['line']['vector_id'], 'v')
+
+    def test_bubble_border_is_rejected_and_short_leader_traces_to_member(self):
+        p = bubble_example()
+        refs = reference_lines(p, dict(title_id='title', bbox=[0, 0, 1, 1]))
+        self.assertEqual(refs[0]['line']['vector_id'], 'connector')
+        self.assertIn('member', refs[0]['line']['support_vector_ids'])
+        self.assertNotIn('other-level', refs[0]['line']['support_vector_ids'])
+        self.assertEqual(set(refs[0]['excluded_bubble_vector_ids']),
+                         {'border-top', 'border-bottom', 'border-bottom-overprint'})
+        result = assign_axis(steel_occurrences(p)[0], refs, p, 'FRAME/West')
+        self.assertEqual(result['view_tags'], ['FRAME/West', 'EL.42.000(TOS)'])
+
+    def test_short_leader_trace_works_with_mirrored_view(self):
+        p = bubble_example(mirrored=True)
+        refs = reference_lines(p, dict(title_id='title', bbox=[0, 0, 1, 1]))
+        result = assign_axis(steel_occurrences(p)[0], refs, p, 'FRAME/West')
+        self.assertEqual(result['view_tags'], ['FRAME/West', 'EL.42.000(TOS)'])
+
+    def test_distant_disconnected_member_is_not_assigned(self):
+        p = bubble_example(gap=True)
+        refs = reference_lines(p, dict(title_id='title', bbox=[0, 0, 1, 1]))
+        self.assertNotIn('member', refs[0]['line']['support_vector_ids'])
+        result = assign_axis(steel_occurrences(p)[0], refs, p, 'FRAME/West')
+        self.assertEqual(result['view_tags'], ['FRAME/West'])
+
+    def test_bubble_alone_does_not_prove_a_reference_line(self):
+        p = bubble_example()
+        p['vectors'] = [v for v in p['vectors'] if v['id'].startswith('border')]
+        refs = reference_lines(p, dict(title_id='title', bbox=[0, 0, 1, 1]))
+        self.assertIsNone(refs[0]['line'])
 
 
 if __name__ == '__main__':

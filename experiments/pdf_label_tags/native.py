@@ -56,6 +56,63 @@ def steel_occurrences(page):
     return result
 
 
+def _bubble_edges(lines, box, font):
+    """Reject compact parallel borders enclosing a name, including overprints.
+
+    PDF exporters may emit the filled bubble and its strokes as different
+    paths, so path identity alone cannot reliably exclude these edges.
+    """
+    excluded = set()
+    c = center(box)
+    for kind in ('HORIZONTAL', 'VERTICAL'):
+        normal = 1 if kind == 'HORIZONTAL' else 0
+        tangent = 1-normal
+        width = box[tangent+2]-box[tangent]
+        edges = [line for line in lines if line['orientation'] == kind
+                 and line['span_pt'][0] <= c[tangent] <= line['span_pt'][1]
+                 and .8*width <= line['length_pt'] <= width+4*font
+                 and abs(line['coordinate_pt']-c[normal]) <= 1.5*font]
+        below = [line for line in edges if line['coordinate_pt'] < c[normal]-.25*font]
+        above = [line for line in edges if line['coordinate_pt'] > c[normal]+.25*font]
+        if below and above:
+            excluded.update(line['vector_id'] for line in below+above)
+    return excluded
+
+
+def _trace_reference(seed, lines, excluded, font, page):
+    """Follow evidenced collinear segments across only small drafting gaps.
+
+    No infinite extension through a view: an unconnected distant member does
+    not acquire this reference. Every extension retains native vector IDs.
+    """
+    lo, hi = seed['span_pt']
+    supported = {seed['vector_id']}
+    changed = True
+    while changed:
+        changed = False
+        for line in lines:
+            if (line['vector_id'] in supported or line['vector_id'] in excluded
+                    or line['orientation'] != seed['orientation']
+                    or abs(line['coordinate_pt']-seed['coordinate_pt']) > .1*font):
+                continue
+            a, b = line['span_pt']
+            if max(a-hi, lo-b, 0) > .5*font:
+                continue
+            supported.add(line['vector_id'])
+            new_lo, new_hi = min(lo, a), max(hi, b)
+            changed = changed or new_lo < lo or new_hi > hi
+            lo, hi = new_lo, new_hi
+    normal = 1 if seed['orientation'] == 'HORIZONTAL' else 0
+    points = []
+    for value in (lo, hi):
+        p = [0., 0.]
+        p[normal], p[1-normal] = seed['coordinate_pt'], value
+        points.append([p[0]/page['width_pt'], p[1]/page['height_pt']])
+    return {**seed, 'span_pt': [lo, hi], 'length_pt': hi-lo, 'points': points,
+            'support_vector_ids': sorted(supported),
+            'trace_tolerance_pt': .1*font, 'max_join_gap_pt': .5*font}
+
+
 def reference_lines(page, view):
     """Attach each native axis-name bubble to an aligned, nearby PDF line.
 
@@ -92,21 +149,25 @@ def reference_lines(page, view):
         box = point_box(text['bbox'], page)
         c = center(box)
         font = text['style']['font_size']
+        excluded = _bubble_edges(candidates, box, font)
         possible = []
         for line in candidates:
+            if line['vector_id'] in excluded:
+                continue
             normal = 1 if line['orientation'] == 'HORIZONTAL' else 0
             tangent = 1-normal
             perp = abs(c[normal]-line['coordinate_pt'])
             lo, hi = line['span_pt']
             gap = max(lo-c[tangent], c[tangent]-hi, 0)
-            if perp > font or gap > (box[tangent+2]-box[tangent])/2 + 4*font or line['length_pt'] < 6*font:
+            if perp > font or gap > (box[tangent+2]-box[tangent])/2 + 4*font or line['length_pt'] < 2*font:
                 continue
             score = perp/font*10 + gap/font + (0 if line['dashed'] else 4) - math.log1p(line['length_pt']/font)
             possible.append((score, line))
         possible.sort(key=lambda item: (item[0], item[1]['vector_id']))
-        selected = possible[0][1] if possible else None
+        selected = _trace_reference(possible[0][1], candidates, excluded, font, page) if possible else None
         result.append({'name': name, 'source_text_id': text['id'], 'bbox': text['bbox'],
-                       'line': selected, 'status': 'LINE_FOUND' if selected else 'NO_ALIGNED_LINE'})
+                       'line': selected, 'excluded_bubble_vector_ids': sorted(excluded),
+                       'status': 'LINE_FOUND' if selected else 'NO_ALIGNED_LINE'})
     return result
 
 
@@ -147,6 +208,7 @@ def assign_axis(label, axes, page, source_plane):
         if axis['name'] not in tags:
             tags.append(axis['name'])
         evidence = {'axis_text_id': axis['source_text_id'], 'axis_vector_id': axis['line']['vector_id'],
+                    'axis_support_vector_ids': axis['line'].get('support_vector_ids', [axis['line']['vector_id']]),
                     'distance_pt': round(distance, 4), 'tolerance_pt': round(2*label['font_size_pt'], 4),
                     'basis': 'Native text direction parallel to named reference line; text center nearby'}
     return {'view_tags': tags, 'axis_match': evidence, 'axis_context': bracket,
