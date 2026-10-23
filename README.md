@@ -1,5 +1,7 @@
 # LLM Count
 
+原生标签与轴面特性交付：见 [独立工具说明](docs/pdf-label-tags-experiment.md)。输出 `stage_one_facts.json` 供标签约束的第二阶段使用，现有任务不自动迁移。
+
 从钢结构 PDF 建造布置图建立规格、名义长度和数量台账。FastAPI、原生 JavaScript、PyMuPDF、OpenAI 兼容 API、SQLite 和 openpyxl。默认自动执行三个阶段并导出，也可逐阶段暂停。
 
 ## 当前流程

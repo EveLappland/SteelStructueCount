@@ -121,6 +121,8 @@ def main():
     export(output, source, report)
     report['elapsed_seconds'] = round(time.monotonic()-started, 3)
     write_json(output / 'report.json', report)
+    from app.label_facts import deliver
+    deliver(output, report, pages)
     audit.event('EXPERIMENT_COMPLETED', counts=report['summary'], acceptance=checks)
     print(json.dumps(report['summary'], ensure_ascii=False), flush=True)
     print(output / 'index.html', flush=True)
