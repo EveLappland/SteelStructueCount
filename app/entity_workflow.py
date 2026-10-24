@@ -11,7 +11,7 @@ from shutil import copy2
 import time
 import uuid
 
-from .ai_concurrency import view_concurrency
+from .task_slots import task_concurrency
 from .audit import AuditLog
 from .entity_inputs import read_inputs
 from .entity_reduction import (EntityReply, compatible, conservation, exact_groups,
@@ -45,7 +45,7 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
     if any(output==Path(s['path']).parent or output in Path(s['path']).parents for s in sources):
         raise ValueError('第三阶段输出目录不能覆盖输入目录或其父目录')
     budget=option(settings,'max_calls','ENTITY_MAX_CALLS',24)
-    limit=view_concurrency(settings); effort=settings.get('reasoning_effort','high')
+    limit=task_concurrency(settings); effort=settings.get('reasoning_effort','high')
     prompt_path=Path(__file__).parent/'prompts/entity_reconciliation.md'
     base_prompt=prompt_path.read_text(encoding='utf-8')
     manifest={'algorithm':'cross-view-entities/v2-matching-only','sources':sources,
@@ -57,7 +57,8 @@ def run(paths, output, settings=None, emit=print, *, call_api=False, resume=Fals
     write_json(manifest_path,manifest)
     base,key,model=_api_settings(settings) if call_api else ('','','')
     audit=AuditLog(output,stage=3,secrets=(key,)); started=time.monotonic()
-    attempt='attempt-entities-'+uuid.uuid4().hex
+    # Match the compact attempt layout used by stage two on Windows.
+    attempt='attempt-e-'+uuid.uuid4().hex[:16]
     responses=output/'responses'/attempt; trace=output/'runs'/attempt
     (output/'views').mkdir(exist_ok=True)
     for view in views.values():

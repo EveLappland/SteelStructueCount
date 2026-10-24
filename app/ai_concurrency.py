@@ -1,4 +1,4 @@
-"""Application-level limits for independent page/view AI requests."""
+"""Per-view request limit in the fixed-label workflow (legacy callers unchanged)."""
 import os
 
 

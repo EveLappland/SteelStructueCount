@@ -135,11 +135,14 @@ class NativeWebTests(unittest.TestCase):
 
     def test_upload_retains_pause_policy_and_omits_secrets_from_state(self):
         response=self.client.post('/api/native/runs/pdf',files=[('files',('generic.pdf',pdf_bytes(),'application/pdf'))],
-            data={'auto_run':'false','stop_after_stage':'2','api_key':'local-only-test-value'})
+            data={'auto_run':'false','stop_after_stage':'2','api_key':'local-only-test-value',
+                  'max_task_concurrency':'10','max_concurrency':'5'})
         self.assertEqual(response.status_code,200,response.text)
         saved=self.app.state.native_runs.get(response.json()['id'])
         self.assertFalse(saved['auto_run'])
         self.assertEqual(saved['stop_after_stage'],2)
+        self.assertEqual(saved['settings']['max_task_concurrency'],10)
+        self.assertEqual(saved['settings']['max_concurrency'],5)
         self.assertNotIn('local-only-test-value',json.dumps(saved))
 
     def test_upload_validates_real_pdf_and_duplicate_files(self):

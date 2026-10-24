@@ -1,6 +1,7 @@
 """Fixed-label grid -> master -> targeted expert -> conflict-only arbitration.
 
-One global queue and request pool. Only the coordinator writes ledgers/traces.
+Views have independent request limits; jobs share an active-view task limit.
+Only each PDF coordinator writes its ledgers/traces.
 Failures deliver one row per source label; no manual or reference-answer input.
 """
 from collections import deque
@@ -16,6 +17,7 @@ import time
 import uuid
 
 from .ai_concurrency import view_concurrency
+from .task_slots import TaskSlots, ViewRequests, task_concurrency
 from .audit import AuditLog
 from .label_facts import load
 from .label_length_context import prepare, frame_input, label_input, details
@@ -69,7 +71,7 @@ def input_manifest(bundle, selected, settings):
         'algorithm':'label-lengths/v2-batched-reviews'}
 
 
-def run(facts_path, output, settings, emit=print, *, call_api=False, resume=False, view_ids=()):
+def run(facts_path, output, settings, emit=print, *, call_api=False, resume=False, view_ids=(), task_slots=None):
     from .pipeline import model_call, OpenAI
     facts_path, output = Path(facts_path).resolve(), Path(output).resolve()
     if output == facts_path.parent:
@@ -80,6 +82,8 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
         raise ValueError('请求的view_id不在第一阶段交付包中')
     output.mkdir(parents=True, exist_ok=True)
     limit = view_concurrency(settings)
+    slots = task_slots if task_slots is not None else TaskSlots(task_concurrency(settings))
+    requests = ViewRequests(slots,str(output),limit)
     effort = settings.get('reasoning_effort', 'high')
     manifest = input_manifest(bundle,selected,settings)
     batch_size = manifest['review_batch_size']
@@ -93,7 +97,9 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
     base,key,model = _api_settings(settings) if call_api else ('','','')
     audit = AuditLog(output, stage=2, secrets=(key,))
     started = time.monotonic()
-    attempt = 'attempt-label-lengths-'+uuid.uuid4().hex
+    # Keep request/validation filenames usable under Windows MAX_PATH even
+    # with isolated web storage; model_call's resume lookup accepts attempt*.
+    attempt = 'attempt-ll-'+uuid.uuid4().hex[:16]
     responses, trace = output/'responses'/attempt, output/'runs'/attempt
     items, ready, pending = {}, deque(), {}
 
@@ -179,7 +185,10 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
                   'summary':{'member_count':len(ledger),'known_length_count':sum(r['length_mm'] is not None for r in ledger),
                       'unknown_length_count':sum(r['length_mm'] is None for r in ledger),
                       'fixed_id_coverage':len(ledger)==sum(len(v['labels']) for v in selected),
-                      'request_concurrency':limit,'elapsed_seconds':round(time.monotonic()-started,3)},
+                      'request_concurrency':limit,'request_limit_scope':'per_view',
+                      'task_concurrency':slots.limit,'task_counts':slots.counts(),
+                      'peak_requests_per_view':dict(requests.peak_by_view),
+                      'elapsed_seconds':round(time.monotonic()-started,3)},
                   'limits':'No cross-view deduplication. Native numeric operands and local arithmetic verified; graphical endpoint/dimension interpretation remains model-derived.'}
         write_json(output/'stage_two.json',result)
         return result
@@ -191,6 +200,9 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
 
     def finish(item):
         item.update(finished=True,state='completed')
+        identity = item['view']['view_id']
+        requests.finish(identity)
+        audit.event('VIEW_TASK_FINISHED',view_id=identity,**slots.counts())
         emit(f"完成 {item['view']['title']}：{sum(c['usable'] for _,c in item['chosen'].values())}/{len(item['chosen'])} 个有长度；固定标签全部保留。")
 
     def after_master(item):
@@ -302,27 +314,42 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
         except Exception as error:
             return None,audit.scrub(str(error))
 
-    audit.event('LABEL_LENGTH_RUN_STARTED',call_api=call_api,concurrency=limit,manifest=manifest)
+    audit.event('LABEL_LENGTH_RUN_STARTED',call_api=call_api,concurrency=limit,
+                concurrency_scope='per_view',task_concurrency=slots.limit,manifest=manifest)
     if call_api:
-        with ThreadPoolExecutor(max_workers=limit,thread_name_prefix='label-length') as executor:
-            while ready or pending:
-                while ready and len(pending)<limit:
-                    task = ready.popleft(); item = items[task.view_id]
-                    item['requests'] += 1
-                    pending[executor.submit(request,task)] = task
-                    emit(f"调度 {task.role} {task.view_id}：{len(task.targets)} 个标签；请求并发 {len(pending)}/{limit}。")
-                done,_ = wait(pending,timeout=1,return_when=FIRST_COMPLETED)
-                for future in done:
-                    task = pending.pop(future)
-                    payload,error = future.result()
-                    if error and task.retry < 1:
-                        audit.event('LABEL_LENGTH_FORMAT_OR_TRANSPORT_RETRY',role=task.role,error=error,view_id=task.view_id)
-                        ready.append(replace(task,retry=task.retry+1,prompt=task.prompt+
-                            '\n本地格式/ID/传输检查错误（不是新增图纸事实）：'+error[:3000]+
-                            '\n请按原图和原始输入返回符合schema且目标ID一一对应的完整对象，不改变标签清单。'))
-                    else:
-                        accept(task,payload,error)
-                    snapshot()
+        try:
+            workers=limit*max(1,min(len(items),slots.limit))
+            with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='label-length') as executor:
+                while ready or pending:
+                    # Scan all views, rather than filling a global five-request pool.
+                    for _ in range(len(ready)):
+                        task=ready.popleft(); identity=task.view_id
+                        was_active=identity in requests.admitted
+                        if not requests.enter(identity):
+                            ready.append(task); continue
+                        if not was_active:
+                            audit.event('VIEW_TASK_STARTED',view_id=identity,**slots.counts())
+                        item=items[identity]; item['requests']+=1
+                        pending[executor.submit(request,task)]=task
+                        emit(f'调度 {task.role} {identity}：视图内请求 {requests.pending[identity]}/{limit}；'
+                             f'主task {slots.counts()["active_tasks"]}/{slots.limit}。')
+                    if not pending:
+                        if ready: slots.wait()
+                        continue
+                    done,_=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
+                    for future in done:
+                        task=pending.pop(future); requests.leave(task.view_id)
+                        payload,error=future.result()
+                        if error and task.retry<1:
+                            audit.event('LABEL_LENGTH_FORMAT_OR_TRANSPORT_RETRY',role=task.role,error=error,view_id=task.view_id)
+                            ready.append(replace(task,retry=task.retry+1,prompt=task.prompt+
+                                '\n本地格式/ID/传输检查错误（不是新增图纸事实）：'+error[:3000]+
+                                '\n请按原图和原始输入返回符合schema且目标ID一一对应的完整对象，不改变标签清单。'))
+                        else:
+                            accept(task,payload,error)
+                        snapshot()
+        finally:
+            requests.close()
     else:
         for item in items.values(): item['state'] = 'prepared'
         emit('已生成网格、固定标签分配和子代理输入；未调用API。')

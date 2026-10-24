@@ -14,7 +14,7 @@ from pydantic import Field, model_validator
 from app.audit import AuditLog
 from app.domain_base import Contract
 from app.drawing_input import pdf_manifest, render_png
-from app.native_pdf import extract_page, write_json
+from app.native_pdf import PDF_LOCK, extract_page, write_json
 from app.pipeline import model_call, parse_model_content, response_content
 from app.settings import _api_settings
 
@@ -60,13 +60,17 @@ def run(pdf, output, settings=None, emit=print, *, reuse_localization=False,
     effort = settings.get('reasoning_effort', 'high')
     audit = AuditLog(output, stage=1, secrets=(key,))
     pages, regions, calls = [], [], []
-    for entry in pdf_manifest([source]):
-        page = extract_page(entry)
+    with PDF_LOCK:
+        entries = pdf_manifest([source])
+    for entry in entries:
+        with PDF_LOCK:
+            page = extract_page(entry)
         write_json(output / 'native' / f"{entry['id']}.json", page)
         pages.append(page)
         image = output / f"{entry['id']}_page.png"
         if not image.exists():
-            image.write_bytes(render_png(entry, dpi=100))
+            with PDF_LOCK:
+                image.write_bytes(render_png(entry, dpi=100))
         response = output / 'responses' / f"{entry['id']}_regions.json"
         if reuse_localization:
             result = parse_model_content(response_content(json.loads(response.read_text(encoding='utf-8'))), Regions, entry)
@@ -113,7 +117,8 @@ def run(pdf, output, settings=None, emit=print, *, reuse_localization=False,
                        'passed': len(v['labels']) == expected_labels_per_view} for v in report['views'])
     report['acceptance'] = checks
     report['elapsed_seconds'] = round(time.monotonic()-started, 3)
-    export(output, source, report)
+    with PDF_LOCK:
+        export(output, source, report)
     report['elapsed_seconds'] = round(time.monotonic()-started, 3)
     write_json(output / 'report.json', report)
     from app.label_facts import deliver

@@ -58,7 +58,7 @@ def sources(service, job):
     twos = {entry.get('input_index', index): entry for index, entry in enumerate(records(job, 2))}
     for index, _ in enumerate(job['inputs']):
         one = folder/ones[index]['directory'] if index in ones else None
-        working=job.get('current_output') or {}
+        working=(job.get('current_outputs') or {}).get(str(index)) or job.get('current_output') or {}
         two = (folder/twos[index]['directory'] if index in twos else
                folder/working['directory'] if working.get('stage')==2 and working.get('input_index')==index else
                folder/f'pdf{index+1:03d}/stage_two' if not job.get('stage_states') or job.get('resume_saved') else

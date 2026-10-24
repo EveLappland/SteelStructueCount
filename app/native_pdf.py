@@ -1,11 +1,15 @@
 """Native PDF evidence. Drawing paths are evidence primitives, never piece counts."""
 import json
 import re
+import threading
 from pathlib import Path
 
 import pymupdf as fitz
 
 from .domain import Evidence
+
+# PyMuPDF native work stays serialized while independent API calls overlap.
+PDF_LOCK = threading.RLock()
 
 
 def normal_box(box, width, height):

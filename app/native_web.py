@@ -1,10 +1,11 @@
 """Web orchestration of the same fixed-label functions used by the CLI tools.
 
-Separate storage keeps legacy tasks readable. A single job queue prevents API
-concurrency from multiplying across jobs; no scoring references enter workers.
+Separate storage keeps legacy tasks readable. Jobs queue; within one job,
+view tasks and their child requests have independent limits.
 """
 from datetime import datetime, timezone
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -20,6 +21,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .ai_concurrency import view_concurrency
+from .task_slots import TaskSlots, task_concurrency
+from .native_pdf import PDF_LOCK
 from .audit import AuditLog
 from .entity_inputs import read_inputs
 from .entity_workflow import option, run as entities
@@ -33,6 +36,7 @@ class RunRequest(BaseModel):
     request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,120}$')
     reasoning_effort: str = Field(default='high', pattern=r'^(low|high|max)$')
     max_concurrency: int | None = Field(default=None, ge=1)
+    max_task_concurrency: int | None = Field(default=None, ge=1)
     max_calls: int | None = Field(default=None, ge=1)
 
 
@@ -171,11 +175,18 @@ class NativeRuns:
             stages = list(job['stages'])
             stage_states = dict(job.get('stage_states',{}))
             settings = {**job['settings'], **self.credentials.get(identity,{})}
+            task_limit = task_concurrency(settings)
+            view_slots = TaskSlots(task_limit)
+            audit.event('CONCURRENCY_POLICY',task_limit=task_limit,requests_per_view=view_concurrency(settings),
+                        max_stage_two_requests=task_limit*view_concurrency(settings))
+            working_outputs = dict(job.get('current_outputs',{}))
             resume = job.get('resume_saved',False)
             def completed(number, directory, summary, index=None):
                 stages.append({'stage':number, 'input_index':index,
                     'directory':directory.relative_to(folder).as_posix(), 'summary':summary})
-                self.update(identity, stages=stages,current_output=None)
+                stages.sort(key=lambda e:(e['stage'],e.get('input_index') if e.get('input_index') is not None else -1))
+                if number==2: working_outputs.pop(str(index),None)
+                self.update(identity, stages=stages,current_output=None,current_outputs=working_outputs)
             def output(number, index=None):
                 revision = stage_states[str(number)]['revision']
                 suffix = f'/p{index+1:03d}' if index is not None else ''
@@ -189,20 +200,31 @@ class NativeRuns:
                     if number==1:
                         from experiments.pdf_label_tags.run import run as catalog
                         existing = {entry.get('input_index',index):entry for index,entry in enumerate(native_stages.records({'stages':stages},1))}
-                        for index, source in enumerate(job['inputs']):
-                            emit(f'第一阶段 · 第 {index+1}/{len(job["inputs"])} 份：{Path(source).name}')
-                            if resume and index in existing:
-                                from .label_facts import load
-                                saved=load(folder/existing[index]['directory']/'stage_one_facts.json')
-                                if saved['source_sha256']!=hashlib.sha256(Path(source).read_bytes()).hexdigest():
-                                    raise ValueError('PDF 与已保存的第一阶段来源指纹不符，不能复用。')
-                                emit(f'复用已校验第一阶段：{Path(source).name}。')
-                                continue
-                            one = output(1,index)
-                            report = catalog(source,one,settings,emit)
-                            completed(1,one,report['summary'],index)
+                        failures=[]
+                        with ThreadPoolExecutor(max_workers=task_limit,thread_name_prefix='catalog-file') as pool:
+                            futures={}
+                            for index, source in enumerate(job['inputs']):
+                                if resume and index in existing:
+                                    from .label_facts import load
+                                    saved=load(folder/existing[index]['directory']/'stage_one_facts.json')
+                                    if saved['source_sha256']!=hashlib.sha256(Path(source).read_bytes()).hexdigest():
+                                        raise ValueError('PDF 与已保存的第一阶段来源指纹不符，不能复用。')
+                                    emit(f'复用已校验第一阶段：{Path(source).name}。')
+                                    continue
+                                one=output(1,index)
+                                futures[pool.submit(catalog,source,one,settings,
+                                    lambda message,i=index:emit(f'文件{i+1} · {message}'))]=(index,one)
+                            for future in as_completed(futures):
+                                index,one=futures[future]
+                                try:
+                                    report=future.result()
+                                    completed(1,one,report['summary'],index)
+                                except Exception as error:
+                                    failures.append(f'文件{index+1}：{audit.scrub(str(error))}')
+                        if failures: raise ValueError('第一阶段部分文件失败；已完成结果保留。'+ '；'.join(failures))
                     elif number==2:
                         local_job = {**job,'stages':stages,'stage_states':stage_states}
+                        prepared=[]
                         for source in native_stages.sources(self,local_job):
                             index = source['index']
                             emit(f'第二阶段 · 第 {index+1}/{len(job["inputs"])} 份文件。')
@@ -231,11 +253,25 @@ class NativeRuns:
                             bundle=json.loads(facts.read_text(encoding='utf-8'))
                             reusable=resume and previous_manifest==length_manifest(bundle,bundle['views'],settings)
                             two = legacy if reusable else output(2,index)
-                            self.update(identity,current_output={'stage':2,'input_index':index,
-                                'directory':two.relative_to(folder).as_posix()})
-                            report = lengths(facts,two,settings,emit,call_api=True,
-                                             resume=reusable)
-                            completed(2,two,report['summary'],index)
+                            prepared.append((index,facts,two,reusable))
+                            working_outputs[str(index)]={'stage':2,'input_index':index,
+                                'directory':two.relative_to(folder).as_posix()}
+                        self.update(identity,current_output=None,current_outputs=working_outputs)
+                        failures=[]
+                        with ThreadPoolExecutor(max_workers=task_limit,thread_name_prefix='length-file') as pool:
+                            futures={pool.submit(lengths,facts,two,settings,
+                                lambda message,i=index:emit(f'文件{i+1} · {message}'),
+                                call_api=True,resume=reusable,task_slots=view_slots):(index,two)
+                                for index,facts,two,reusable in prepared}
+                            for future in as_completed(futures):
+                                index,two=futures[future]
+                                try:
+                                    report=future.result()
+                                    completed(2,two,report['summary'],index)
+                                except Exception as error:
+                                    failures.append(f'文件{index+1}：{audit.scrub(str(error))}')
+                        audit.event('STAGE_TWO_TASK_CONCURRENCY',**view_slots.counts(),requests_per_view=view_concurrency(settings))
+                        if failures: raise ValueError('第二阶段部分文件失败；已完成结果保留。'+ '；'.join(failures))
                     else:
                         paths = ([folder/e['directory'] for e in native_stages.records({'stages':stages},2)]
                                  if native_stages.records({'stages':stages},2) else [Path(p) for p in job['inputs']])
@@ -292,6 +328,9 @@ class NativeRuns:
                 resume=body.reuse_saved and job['state'] in ('failed','interrupted')
                 job['resume_saved']=resume
                 working=job.get('current_output') or {}
+                if resume:
+                    for index,entry in job.get('current_outputs',{}).items():
+                        job.setdefault('resume_outputs',{})[index]=entry['directory']
                 if resume and working.get('stage')==2:
                     job.setdefault('resume_outputs',{})[str(working['input_index'])]=working['directory']
                 states[str(number)]={'revision':body.revision+1,'status':'queued'}
@@ -302,16 +341,16 @@ class NativeRuns:
                 next_stage=number; state='queued'
                 if resume and job['mode']=='PDF' and len(native_stages.records(job,1))<len(job['inputs']):
                     next_stage=1
-            for key in ('reasoning_effort','max_concurrency','max_calls'):
+            for key in ('reasoning_effort','max_concurrency','max_task_concurrency','max_calls'):
                 value=body.settings.get(key)
                 if value not in (None,''):job['settings'][key]=value
             if job['settings'].get('reasoning_effort','high') not in ('low','high','max'):
                 raise HTTPException(422,'思考强度只能是 low、high 或 max。')
             try:
-                view_concurrency(job['settings']); option(job['settings'],'max_calls','ENTITY_MAX_CALLS',24)
+                view_concurrency(job['settings']); task_concurrency(job['settings']); option(job['settings'],'max_calls','ENTITY_MAX_CALLS',24)
             except ValueError as error:raise HTTPException(422,str(error)) from error
             if body.auto_run is not None:job['auto_run']=body.auto_run
-            job.update(state=state,next_stage=next_stage,error=None,history=history,stage_states=states,current_output=None,
+            job.update(state=state,next_stage=next_stage,error=None,history=history,stage_states=states,current_output=None,current_outputs={},
                        updated_at=datetime.now(timezone.utc).isoformat())
             db.execute('UPDATE runs SET data=? WHERE id=?',(json.dumps(job,ensure_ascii=False),identity))
         return job,state=='queued'
@@ -333,7 +372,9 @@ def router(root, static, start_workers=True):
 
     @api.get('/api/native/capabilities')
     def capabilities():
-        return {'stage_controls':True,'readonly_ledger':True,'ui':'original-stage-page'}
+        return {'stage_controls':True,'readonly_ledger':True,'ui':'original-stage-page',
+                'concurrency_model':'per-view-v1','task_limit':task_concurrency(),
+                'requests_per_view':view_concurrency()}
 
     @api.get('/api/native/runs')
     def runs():
@@ -360,14 +401,17 @@ def router(root, static, start_workers=True):
         if launch:service.launch(identity)
         return native_stages.status(service,identity)
 
-    def settings(effort, concurrency, budget, private=None):
+    def settings(effort, concurrency, budget, private=None, tasks=None):
         value = {'reasoning_effort': effort}
         if concurrency is not None:
             value['max_concurrency'] = concurrency
+        if tasks is not None:
+            value['max_task_concurrency'] = tasks
         if budget is not None:
             value['max_calls'] = budget
         try:
             view_concurrency(value)
+            task_concurrency(value)
             option(value, 'max_calls', 'ENTITY_MAX_CALLS', 24)
             _api_settings({**value,**(private or {})})
         except (ValueError, RuntimeError) as error:
@@ -385,7 +429,7 @@ def router(root, static, start_workers=True):
             except (ValueError, OSError, KeyError) as error:
                 raise HTTPException(422, str(error)) from error
         value, created = service.create(body.request_id, previous['mode'], previous['inputs'],
-            settings(body.reasoning_effort,body.max_concurrency,body.max_calls),
+            settings(body.reasoning_effort,body.max_concurrency,body.max_calls,tasks=body.max_task_concurrency),
             auto_run=previous.get('auto_run',True),stop_after_stage=previous.get('stop_after_stage',3))
         if created:
             service.launch(value['id'])
@@ -402,7 +446,7 @@ def router(root, static, start_workers=True):
         except (ValueError, OSError, KeyError) as error:
             raise HTTPException(422, str(error)) from error
         value, created = service.create(body.request_id, 'MATCH', paths,
-            settings(body.reasoning_effort, body.max_concurrency, body.max_calls),auto_run=body.auto_run)
+            settings(body.reasoning_effort, body.max_concurrency, body.max_calls,tasks=body.max_task_concurrency),auto_run=body.auto_run)
         if created:
             service.launch(value['id'])
         return value
@@ -410,10 +454,11 @@ def router(root, static, start_workers=True):
     @api.post('/api/native/runs/pdf')
     def upload(files: list[UploadFile] = File(...), reasoning_effort: str = Form('high', pattern=r'^(low|high|max)$'),
                max_concurrency: int | None = Form(None, ge=1), max_calls: int | None = Form(None, ge=1),
+               max_task_concurrency: int | None = Form(None, ge=1),
                auto_run: bool = Form(True), stop_after_stage: int = Form(3,ge=1,le=4),
                base_url: str = Form(''), api_key: str = Form(''), model: str = Form('')):
         private={k:v for k,v in {'base_url':base_url,'api_key':api_key,'model':model}.items() if v}
-        options = settings(reasoning_effort,max_concurrency,max_calls,private)
+        options = settings(reasoning_effort,max_concurrency,max_calls,private,tasks=max_task_concurrency)
         if not files or any(not (f.filename or '').lower().endswith('.pdf') for f in files):
             raise HTTPException(422, '请上传 PDF 文件。')
         # Never accept a client filesystem path. Uploaded names cannot escape.
@@ -427,7 +472,7 @@ def router(root, static, start_workers=True):
                 path = staging/f'{index+1:03d}_{name}'
                 with path.open('wb') as target:
                     shutil.copyfileobj(file.file, target)
-                with fitz.open(stream=path.read_bytes(), filetype='pdf') as pdf:
+                with PDF_LOCK, fitz.open(stream=path.read_bytes(), filetype='pdf') as pdf:
                     if not pdf.is_pdf or pdf.needs_pass or pdf.page_count == 0:
                         raise ValueError('PDF 为空或需要密码。')
                 paths.append(str(path.resolve()))
