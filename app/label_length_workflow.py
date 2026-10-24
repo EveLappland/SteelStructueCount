@@ -60,6 +60,15 @@ def review_batches(view, targets, size):
     return batches
 
 
+def input_manifest(bundle, selected, settings):
+    batch_size=settings.get('review_batch_size',os.getenv('LABEL_LENGTH_REVIEW_BATCH_SIZE','6'))
+    if isinstance(batch_size,bool) or not str(batch_size).isdigit() or not 1<=int(batch_size)<=12:
+        raise ValueError('LABEL_LENGTH_REVIEW_BATCH_SIZE需要1至12的整数')
+    return {'stage_one_sha256':bundle['bundle_sha256'],'view_ids':[v['view_id'] for v in selected],
+        'reasoning_effort':settings.get('reasoning_effort','high'),'review_batch_size':int(batch_size),
+        'algorithm':'label-lengths/v2-batched-reviews'}
+
+
 def run(facts_path, output, settings, emit=print, *, call_api=False, resume=False, view_ids=()):
     from .pipeline import model_call, OpenAI
     facts_path, output = Path(facts_path).resolve(), Path(output).resolve()
@@ -72,13 +81,8 @@ def run(facts_path, output, settings, emit=print, *, call_api=False, resume=Fals
     output.mkdir(parents=True, exist_ok=True)
     limit = view_concurrency(settings)
     effort = settings.get('reasoning_effort', 'high')
-    batch_size = settings.get('review_batch_size',os.getenv('LABEL_LENGTH_REVIEW_BATCH_SIZE','6'))
-    if isinstance(batch_size,bool) or not str(batch_size).isdigit() or not 1<=int(batch_size)<=12:
-        raise ValueError('LABEL_LENGTH_REVIEW_BATCH_SIZE需要1至12的整数')
-    batch_size = int(batch_size)
-    manifest = {'stage_one_sha256': bundle['bundle_sha256'], 'view_ids': [v['view_id'] for v in selected],
-                'reasoning_effort': effort, 'review_batch_size':batch_size,
-                'algorithm': 'label-lengths/v2-batched-reviews'}
+    manifest = input_manifest(bundle,selected,settings)
+    batch_size = manifest['review_batch_size']
     path = output/'input_manifest.json'
     if path.exists():
         if not resume or json.loads(path.read_text(encoding='utf-8')) != manifest:

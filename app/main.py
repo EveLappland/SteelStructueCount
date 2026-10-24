@@ -304,7 +304,7 @@ def create_app(root=ROOT, start_workers=True):
     def index():
         static=ROOT/'static'
         html=(static/'index.html').read_text(encoding='utf-8')
-        for name in ('styles.css','ledger.js','group_stage.js','app.js'):
+        for name in ('styles.css','ledger.js','group_stage.js','fixed_stage.js','app.js'):
             version=hashlib.sha256((static/name).read_bytes()).hexdigest()[:12]
             html=html.replace(f'"/{name}"',f'"/{name}?v={version}"')
         return HTMLResponse(html,headers={'Cache-Control':'no-store'})

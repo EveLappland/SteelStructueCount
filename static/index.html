@@ -3,9 +3,10 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>钢材图纸统计</title><link rel="stylesheet" href="/styles.css"></head>
 <body><main class="shell">
 <header><div><p class="eyebrow">PDF → 视图 → 钢材台账</p><h1>钢材统计</h1></div><span class="header-note">逐阶段核对，按单根钢材汇总</span></header>
-<p><a href="/workflow"><strong>进入新版固定标签流程：PDF 上传、尺寸识别、匹配去重与导出 →</strong></a>　此页保留旧版任务。</p>
+<p>固定标签流程已接入此任务页面；默认自动完成三阶段。已有历史任务保留查看。</p>
+<p id="workflow-availability" role="status"></p>
 <section class="workspace">
-<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认自动完成页面筛选、高清裁切、AI构件识别与完整key去重，导出台账。疑点保留在审计与待处理清单；可选人工修改。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，手动检查后继续</label><label class="toggle"><input id="stage12-only" type="checkbox">仅测试第一、二阶段，完成后暂停</label>
+<form id="upload-form" class="upload-panel" novalidate><h2>新建图纸任务</h2><p>默认自动完成视图定位、原生标签与轴面提取、尺寸识别和跨视图匹配去重，导出台账。可逐阶段暂停查看；当前固定标签台账只读。</p><label class="toggle"><input id="pause-stages" type="checkbox">逐阶段暂停，检查后继续</label><label class="toggle"><input id="stage12-only" type="checkbox">仅测试第一、二阶段，完成后暂停</label>
 <label class="dropzone"><input id="files" type="file" accept="application/pdf,.pdf" multiple required><strong>选择 PDF 图纸</strong><small>首版支持可提取文字和矢量的 PDF</small></label><div id="file-list"></div>
 <details class="api-settings"><summary>视觉模型设置</summary><label>API 地址<input id="base-url" placeholder="留空使用 .env"></label><label>API Key<input id="api-key" type="password" autocomplete="off"></label><label>视觉模型<input id="model"></label><label>AI 请求并发数<input id="max-concurrency" type="number" min="1" step="1" placeholder="留空使用.env；默认5"></label><label>识图图片<select id="label-color-mode"><option value="original">原图（默认）</option><option value="colored">钢材名/轴线名着色图（实验）</option></select></label><small>第一阶段按页判断定位、按视图独立统计数量。第二阶段网格子代理、总代理、长度专家与仲裁代理共享请求并发上限，不叠乘；PDF渲染串行执行。网页设置仅用于本次任务；重启后使用 .env 或重新填写。</small></details>
 <p id="upload-error" role="alert" hidden></p><button id="submit" type="submit">开始第一阶段</button></form>
@@ -20,4 +21,4 @@
 <div class="review-actions"><label>修改说明<input id="edit-reason" placeholder="说明首尾、尺寸或匹配的修改依据"></label><button id="save" type="button">保存修改并重新计算</button><label class="toggle"><input id="pending" type="checkbox">允许带未解决问题继续（此勾选不会排除台账行；未分配项保留在待处理清单）</label><button id="approve" type="button">继续下一阶段</button></div>
 </section>
 <details id="task-trace" class="advanced" hidden><summary>处理依据与 API 日志</summary><p>查看请求耗时、响应校验、证据修复、长度计算和匹配原因。日志不包含 API Key。</p><button id="refresh-trace" type="button">刷新日志</button><a id="download-trace" class="download">下载任务日志</a><div id="trace-content"></div></details>
-</main><script src="/ledger.js"></script><script src="/group_stage.js"></script><script src="/app.js"></script></body></html>
+</main><script src="/ledger.js"></script><script src="/group_stage.js"></script><script src="/fixed_stage.js"></script><script src="/app.js"></script></body></html>

@@ -33,12 +33,15 @@ class NativeWebTests(unittest.TestCase):
         sources = self.client.get('/api/native/sources').json()
         return {'source_ids':[sources[0]['id']], 'request_id':'one-request'}
 
-    def test_web_entry_is_versioned_and_legacy_has_visible_link(self):
-        response = self.client.get('/workflow')
+    def test_workflow_returns_to_original_page_with_versioned_adapter(self):
+        response = self.client.get('/workflow?run=existing-task')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers['cache-control'], 'no-store')
-        self.assertRegex(response.text, r'/native_workflow.js\?v=[a-f0-9]{12}')
-        self.assertIn('/workflow', self.client.get('/').text)
+        self.assertEqual(response.url.path,'/')
+        self.assertEqual(response.url.params['job'],'existing-task')
+        self.assertRegex(response.text,r'/fixed_stage.js\?v=[a-f0-9]{12}')
+        self.assertIn('id="pause-stages"',response.text)
+        self.assertTrue(self.client.get('/api/native/capabilities').json()['stage_controls'])
 
     def test_importing_service_does_not_interrupt_another_worker(self):
         value = self.client.post('/api/native/runs/match', json=self.body()).json()
@@ -84,6 +87,9 @@ class NativeWebTests(unittest.TestCase):
         self.assertTrue(self.client.get(url+'stage_three/stage_three.xlsx').content.startswith(b'PK'))
         self.assertIn('只选择已有长度来源', self.client.get(url+'stage_three/index.html').text)
         self.assertEqual(self.client.get(url+'..%2F..%2Fnative_runs.sqlite3').status_code, 404)
+        archive=self.client.get('/api/native/runs/'+value['id']+'/evidence-download')
+        self.assertEqual(archive.status_code,200)
+        self.assertTrue(archive.content.startswith(b'PK'))
         restored = NativeRuns(self.root, False)
         restored.recover()
         self.assertEqual(restored.get(value['id'])['state'], 'completed')
@@ -91,6 +97,50 @@ class NativeWebTests(unittest.TestCase):
         self.assertNotEqual(next_run['id'], value['id'])
         self.assertEqual(next_run['inputs'], value['inputs'])
         self.assertEqual(restored.get(value['id'])['state'], 'completed')
+
+    def test_manual_stage_three_confirmation_is_versioned_and_idempotent(self):
+        body=self.body()
+        value=self.client.post('/api/native/runs/match',json=body).json()
+        self.app.state.native_runs.update(value['id'],auto_run=False)
+        self.app.state.native_runs.worker(value['id'])
+        base='/api/native/runs/'+value['id']
+        stage=self.client.get(base+'/stages/3').json()
+        self.assertEqual(stage['status'],'awaiting_review')
+        self.assertEqual(stage['data']['workflow'],'native_labels')
+        self.assertIsNone(self.client.get(base).json()['download_url'])
+        self.assertEqual(self.client.post(base+'/stages/3/approve',json={'revision':99}).status_code,409)
+        for _ in range(2):
+            response=self.client.post(base+'/stages/3/approve',json={'revision':stage['revision']})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['state'],'completed')
+
+    def test_restart_two_preserves_sources_history_and_invalidates_downloads(self):
+        value=self.client.post('/api/native/runs/match',json=self.body()).json()
+        service=self.app.state.native_runs
+        service.worker(value['id'])
+        base='/api/native/runs/'+value['id']
+        old=self.client.get(base).json()['download_url']
+        original=self.client.get(old).content
+        stage=self.client.get(base+'/stages/2').json()
+        self.assertEqual(stage['data']['views'][0]['plane_name'],'LEVEL')
+        self.assertEqual(self.client.get(stage['data']['views'][0]['image_url']).status_code,200)
+        response=self.client.post(base+'/stages/2/retry',json={'revision':stage['revision']})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['state'],'queued')
+        self.assertEqual(response.json()['active_stage'],2)
+        self.assertIsNone(response.json()['download_url'])
+        self.assertEqual(self.client.get(old).content,original)
+        self.assertEqual(self.client.get(base+'/stages/3').json()['status'],'stale')
+        self.assertTrue(service.get(value['id'])['history'])
+
+    def test_upload_retains_pause_policy_and_omits_secrets_from_state(self):
+        response=self.client.post('/api/native/runs/pdf',files=[('files',('generic.pdf',pdf_bytes(),'application/pdf'))],
+            data={'auto_run':'false','stop_after_stage':'2','api_key':'local-only-test-value'})
+        self.assertEqual(response.status_code,200,response.text)
+        saved=self.app.state.native_runs.get(response.json()['id'])
+        self.assertFalse(saved['auto_run'])
+        self.assertEqual(saved['stop_after_stage'],2)
+        self.assertNotIn('local-only-test-value',json.dumps(saved))
 
     def test_upload_validates_real_pdf_and_duplicate_files(self):
         response = self.client.post('/api/native/runs/pdf', files=[('files',('generic.pdf',pdf_bytes(),'application/pdf'))])
