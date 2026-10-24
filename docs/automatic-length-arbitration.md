@@ -1,5 +1,7 @@
 # 自动长度仲裁：设计与验证
 
+> **历史开发记录**：以下“当前”、分支、端口、执行方式和指标均指本文写作时的版本，不代表现有主流程；请勿据此启动另一套产品服务或引用为最新成绩。当前实现见 [架构](architecture.md)，指标见 [测试与验收](validation.md)，入口见 [文档目录](README.md)。
+
 当前默认采用文末的 **Evidence provenance and economical review** 流程；以下多角色执行路径及验收数字保留为历史记录，不代表节省模式的新验收结果。
 
 2026-10-22，分支 `feature/automatic-length-arbitration`。

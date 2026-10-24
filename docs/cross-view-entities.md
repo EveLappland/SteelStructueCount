@@ -1,112 +1,91 @@
-# 固定标签第三阶段：跨视图实体归约
+# 第三阶段：跨视图匹配、去重与消歧
 
-分支 `feature/cross-view-entities`，承接 `label-lengths/v1` 第二阶段真实结果。
-这是新固定标签链路的第三阶段工具与结果页，未替换旧SQLite任务接口；原有任务不会自动迁移。
-程序不读取人工台账、不接收参考答案；AI请求及中间回答全部审计，无人工改结果步骤。
-当前为`cross-view-entities/v2`只匹配模式：第三阶段不再产生新尺寸表达式或重算长度；历史v1结果保留，不自动迁移。
+入口：[entity_workflow.py:run](../app/entity_workflow.py)，规则与回复校验见 [entity_reduction.py](../app/entity_reduction.py)。当前算法标识 `cross-view-entities/v2-matching-only`，输出格式 `cross-view-entities/v2`。
 
-v2验证：193项Python、5项Node测试通过；使用已有四份文件354条观察做本地准备与完整性检查，179条单面标签均原样独立保留。
-另限额1次真实API验证匹配schema/6条观察的划分，响应通过，未重跑全量付费评分；旧94.36% F1属于下文历史v1。
+本阶段不自由重算，不重新切段，不新增标签或尺寸表达式；它将第二阶段观察归约为实体，并在已有有效长度之间选择。当前已接入主网页，旧 v1 自由重算结果保留，不自动迁移。
 
-## 运行
+## 输入与候选关系
 
-```powershell
-.\.venv\Scripts\python.exe tools/test_entity_reconciliation.py --stage-two tmp/label_lengths/pdf02 --stage-two tmp/label_lengths/pdf04 --output tmp/label_lengths/entities02_04 --api
+读取全部 `stage_two.json`、第一阶段快照和高清图。调用前检查标签集合、规格、计数、所属面、图片指纹及已知长度的原生引用/算术。不同 PDF 的局部标签 ID 通过 `PDF完整SHA256:label_id` 加命名空间；重复输入同一 PDF 视图会被拒绝。
+
+两个观察成为跨视图候选需同时满足：
+
+1. 来自不同视图、不同当前所属面。
+2. 双方均有附加面标签；规范规格和组合倍率一致。
+3. A 的当前面在 B 的 `view_tags` 中，B 的当前面也在 A 的 `view_tags` 中。
+
+长度不是候选门槛，因此已知/UNKNOWN、不同长度可以核验对应。反之，仅仅规格和长度相同不证明重复。当前程序不为建立候选而自由补面标签。
+
+仅有一个 `view_tag` 的观察直接独立保留；其他没有跨视图候选的观察也保留，不调用模型。不同标高平面若没有实际互属关系，不会仅因同规格同长度被去重。
+
+## 归约规则
+
+候选关系形成关联组。对于所有长度已知、无疑点和本地错误，且各视图的“完整标签集合＋长度”数量分布一致、对应也满足候选关系的组，程序按同质数量组归约。例如各视图均观察到 3 根，则保留 3 个数量，不虚构无法区分的逐根配对。
+
+其余有关联的组交给匹配 Agent。输入包含观察 ID、规格/面名、已有长度、第二阶段 `endpoints / basis / issue / review_notes`、轴面关系以及有来源标识的原图和局部图。
+
+Prompt：[entity_reconciliation.md](../app/prompts/entity_reconciliation.md)。回复只划分来源并选长度来源：
+
+```json
+{
+  "entities": [{
+    "observation_ids": ["本次观察ID"],
+    "length_source_id": null,
+    "reason": "对应或独立保留的依据"
+  }]
+}
 ```
 
-`--stage-two`可重复，传目录或stage_two.json。每份目录需保留 `stage_one_facts.snapshot.json` 和二阶段高清原图。
-不加`--api`只生成输入/提示词及规则匹配试算，未调用项目会显示PREPARED/回退独立观察；不能视为AI已裁决。
-相同输出目录须显式 `--resume`，并校验输入文件指纹、prompt、schema和参数；仅请求签名相同且通过契约检查的历史响应可复用。
-第二阶段JSON、图片及一阶段快照在调用前校验，第三阶段不写回它们。
+程序强制：
 
-思考默认high，可用 `--reasoning-effort low|high|max`；并发共享`.env LLM_MAX_CONCURRENCY`默认5，可用`--max-concurrency`覆盖。
-已移除独立长度补证、`--batch-size`及`ENTITY_REVIEW_BATCH_SIZE`配置。
-`ENTITY_MAX_CALLS=24`是一次调用的总请求预算，包含一次格式/引用/传输重试（`--max-calls`覆盖）。
-超过预算、单个不可拆分匹配组超过32条或两次均失败时，保留全部源观察为独立实体，明确标记FALLBACK；可能残留重复，不假装已经去重。
-同一输出目录resume的预算按本次执行计算；复用的响应记录在审计中，新增付费请求数应以MODEL_REQUEST_STARTED事件为准。
+- 本次每条观察恰好归属一次，不得使用目录外 ID。
+- 一个逐根实体不能包含同一视图的两个标签；同 key 的独立构件不能被压成一根。
+- 合并实体内部的跨视图关系须满足允许匹配约束。
+- `length_source_id` 必须属于该实体，且已有有效第二阶段测量。
+- 独立观察保留原长度；全部来源未知则仍 UNKNOWN；不能合并后抹掉已有长度。
+- 不接受新长度、表达式、端点、规格、数量或面标签字段。
 
-## 匹配原则
+UNKNOWN 只有在与另一条已有长度的观察匹配为同一实体后，才能继承其长度。第三阶段不负责从图上重新求解没有任何已知来源的长度。
 
-1. 观察ID是 `PDF完整SHA256:label_id`；视图ID同样带来源命名空间。不同PDF局部ID重名不会覆盖；同一PDF同一视图重复输入会被拒绝。
-2. `spec + view_tags + length`不是实体唯一ID。长度不作为候选门槛，UNKNOWN及不同长度可以进入同一核验组。
-3. 跨视图候选要求规范规格/组合倍率一致，且双方view_tags分别包含对方当前所属面。相同标高下A/B等不同位置、同一面不同副本、仅仅对称均不能自动合并。
-4. 同一视图不同钢材标签代表不同出现，不能压成一个实体。每条观察恰好归属一次；每个逐根实体在一个视图最多一条观察。
-5. 无疑点且各视图标签/长度分布完全相同的组，按相同数量归约为同质数量组。例如3对3保留3个实体数量、6条来源；不虚构无法区分的逐根配对。
-6. 数量或长度分布不同、UNKNOWN、原结果有疑点的关联组，交给Agent按原图端点/拼接/顺序划分实体，不能机械取最大值或最小值。
-7. 只有一个view_tag的观察直接独立保留，原长度、UNKNOWN和疑点不变，不调用AI。其他没有跨视图候选的观察也直接保留。
-8. 匹配后仅可选择该实体已有的第二阶段长度来源；独立保留的观察不能改长或清空长度。全部来源UNKNOWN则仍UNKNOWN；选择不出已有长度可保留独立观察。
+## 并发、预算与回退
 
-图中轴线近邻关系仍是一阶段的程序提议，不代表已确认物理端点。
-缺乏相互所属面标签时本版不自动添加或猜测标签来扩大匹配，保留独立观察；更复杂的空间定位仍需后续证据。
+匹配组线程池使用 `LLM_TASK_CONCURRENCY`，默认 10。请求预算 `ENTITY_MAX_CALLS` 默认 24，包含一次工作流格式/传输重试；第二阶段每视图 5 请求的配置不控制这里。
 
-## Agent与证据
+关联组超过 32 条、预算耗尽或请求/契约检查失败时，回退为独立观察并记录 FALLBACK。保留数量可以保证流程导出，但可能留下重复；不能把回退当成匹配已确认。单条观察既有长度仍保留，未知仍未知。
 
-提示词：`app/prompts/entity_reconciliation.md`。
-每次仅给该关联组的观察、已有长度、完整endpoints/basis、issue/review_notes、程序轴线关系、相关原图和局部图。
-标签bbox、方向和axis_context辅助图内定位；不同图的像素坐标不能直接比较。第二阶段endpoints/basis提示词加强轴间、标高、拼接两侧和构件走向描述，不增加新字段。
-`image_map`明确标识每张图片来自哪个视图。不同图片的相同text_id只在对应视图范围有效。
-输出仅划分observation_ids、选择length_source_id、解释reason。schema禁止revision/measurement/dimensions/新端点/新长度，拒绝旧版本自由重算回复。
+预算按本次执行计算；恢复时实际新增付费量以事件日志为准，不应把缓存复用也算成新请求。
 
-尺寸计算在第二阶段完成；第三阶段复制选定来源的完整测量，不产生表达式。验证工具检查v2最终长度/测量必须与某条来源完全一致，并重新检查来源算术。
-其他视图有长度时，只有在匹配为同一实体后才能传递，不能因多数投票或某张图简单就强行覆盖。
-OF SPLICE分段需对应实际拼接基线，长度之和相等不能单独证明分段正确。
+## 输出与单根数量
 
-## 导出和核验
+先得到实体/同质数量组，再按 `member_cnt × component_multiplier` 展开单根。组合角钢只展开一次，组件有独立 ID。
 
-`stage_three.json`含实体、数量组、全部观察到实体的映射、原长度与采用长度、每个自动任务状态和逐视图数量守恒检查。
-`stage_three.xlsx`含实体台账、跨视图观察对应、原始观察、单根汇总、展开单根台账、未知与回退、自动任务审计。
-组合先匹配为一个实体/数量组，仅在单根导出时按倍率展开一次，组件ID不同，重复导出不重复累计。
-UNKNOWN也保留数量，长度留空；FALLBACK即使有原长度也不是已完成匹配。
-`responses/`保留真实模型JSON、schema、prompt和请求签名，`runs/`保留本地验证结果，`logs/events.jsonl`记录并发、重试、耗时及token。
-`index.html`提供结果页及高清来源图，目录可由现有8127静态服务直接展示。
+| 产物 | 内容 |
+| --- | --- |
+| `stage_three.json` | 实体、来源对应、采用测量、自动任务状态、守恒检查 |
+| `components.json`、`quantity_summary.json`、`entities.csv` | 展开单根及规格长度数量汇总 |
+| `observations.json`、`source_views.json`、`views/` | 原始观察和来源高清图 |
+| `stage_three.xlsx` | 实体、单根汇总、展开台账、匹配对应、原始观察、审计、未知与回退 |
+| `index.html`、`verification.json` | 可读报告及本地一致性检查 |
+| `responses/`、`runs/`、`logs/` | 模型回答、提示词、请求签名、校验及事件 |
 
-本地测试只验证数据契约、守恒、几何关联限制、算术和组件展开，不模拟API调用：
+Excel 的 `Quantity Length Summary` 为评分兼容表，列为“规格、名义长度 mm、单根数量、总长度 mm”。UNKNOWN 保留数量、长度为空，不作为正确匹配。
+
+守恒检查验证全部观察恰好分配、每视图数量和单根展开一致；来源检查验证长度取自对应观察。它们不证明跨视图对应在工程上正确。
+
+## 独立运行
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_entity_reconciliation.py -v
-.\.venv\Scripts\python.exe tools/verify_entities.py --result tmp/label_lengths/entities02_04_final
+.\.venv\Scripts\python.exe tools/test_entity_reconciliation.py --stage-two tmp/label_lengths/run-a --stage-two tmp/label_lengths/run-b --output tmp/entities/my-run --api
 ```
 
-工程正确率需另行离线对照，不用UNKNOWN减少量、守恒通过或填写率代替准确率。
+`--stage-two` 可重复，传目录或 JSON；保留输入目录中的快照与图片。不加 `--api` 只执行准备、本地规则与回退，不能称为 AI 已核验。`--resume` 要求来源、参数与 Prompt 等一致。
 
-中间真实验证结果保存在忽略的`tmp/label_lengths/entities02_04_final/`，完整02～05验证另存目录。
-参考和评分只在运行完成后离线使用，不进入识别代码、prompt或API输入。
+预算用 `--max-calls`；task 并发用环境变量或网页/API 的 `max_task_concurrency`。当前 CLI 的 `--max-concurrency` 不控制第三阶段 task 池，详见 [配置说明](configuration.md)。
 
-## 历史v1：02～05全量真实验证
+本地复核不调用 API，但会生成验证记录：
 
-以下是收敛为只匹配模式前的历史实测，不作为v2的新评分。
+```powershell
+.\.venv\Scripts\python.exe tools/verify_entities.py --result tmp/entities/my-run
+```
 
-02、04复用已校验的一、二阶段文件；03、05新跑一、二阶段；第三阶段统一读取四份文件的11个视图。
-结果目录：`tmp/label_lengths/entities02_05_full/`，`report.html`为完整核对报告，`index.html`为实体台账与Excel下载。
-全部模型调用结束后才读取既有独立原图名义长度参考；该参考尚非用户最终确认的工程基准。
-
-| 指标 | 实测 |
-| --- | ---: |
-| 输入观察（每标签一根/组合） | 354 |
-| 去掉跨视图重复观察 | 83 |
-| 实体/组合数量 | 271 |
-| 展开后单根数量 / 参考数量 | 311 / 310 |
-| UNKNOWN输入 → 输出 | 4 → 0 |
-| 规格+名义长度匹配，±1mm | 293 |
-| Precision / Recall / F1 | 94.21% / 94.52% / 94.36% |
-| 完整view_tags严格匹配 | 同样293根 |
-| 规格种类覆盖 | 16 / 16 |
-| 新增API请求 / 真实并发峰值 | 77 / 5 |
-| 本轮墙钟时间 | 1294.95秒 |
-| 第三阶段时间 | 208.59秒 |
-| 新增累计token（含失败回复） | 1715224 |
-
-第三阶段32个请求任务复用11个已签名响应，实际新增21次调用；20个分布一致的候选组由本地规则保留数量归约。
-全量统计不包括更早两轮02+04开发测试的36次调用，该用量775861 token在run_statistics.json另列，不混入本轮费用数据。
-354条观察均恰好归属一次，逐视图数量不变，源文件和图像指纹不变；所有最终数值的文字引用与本地算术通过核验。
-189项Python测试、5项Node测试通过。05出现一次额外issue_note字段，自动格式重试恢复；03、05小批专家/仲裁未发生token截断。
-
-仍有17根错长、1根未去重，未按评分修订台账：
-
-- A面的斜撑直角边仍有误，L100*10和L80*8各4根单件长度不符；IPET270另有6根长度不符。
-- 顶部两条HEA300从UNKNOWN补上了错误分段；UNKNOWN清零不代表全部修正正确。
-- 第三阶段还把一根原本正确的HEA260错误改长，说明单视图补证可能造成退化。
-- /2立面一条HEB550缺少标高标签，双向所属面候选没有建立，保守保留后多计1根。需要后续的缺失标签补证，而非按参考总数删行。
-
-逐视图回投核对，A面由44/57提高到50/57，B面由48/56提高到56/56；EL.115.000平面仍为37/43。
-本版可以自动完整导出，但复杂图的拼接解释和直角边关联仍需改进，不能把此统计当作最终工程验收。
+准确率另按 [测试与指标](validation.md) 离线计算；不得将人工基准送入匹配提示词或按参考总数删行。

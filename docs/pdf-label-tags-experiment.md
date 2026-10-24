@@ -1,62 +1,82 @@
-# 原生 PDF 标签与轴面实验
+# 第一阶段：原生标签、轴面与高清裁切
 
-实验代码位于 `experiments/pdf_label_tags/`，未接入现有第一、二、三阶段服务。
-API 只接收整页预览和带位置的原生文字，输出独立建造视图的标题文字 ID、类型和归一化矩形。
-提示词是 `experiments/pdf_label_tags/localize.md`。模型不统计构件，不填写逐根 view_tags。
+本模块已接入 8120 主网页新任务。目录 `experiments/pdf_label_tags/` 和本文文件名保留早期命名，不能据此认为它仍是独立实验。
 
-本地在模型确定的矩形内调用项目规格解析器，以每个原生标签出现位置建立独立记录。
-假设每根钢材都有一个规格标签，因此每个标签计一根（组合规格计一个组合，另存组件倍数）。
-相同规格、相同文字在不同位置不会被合并；不同视图不去重。多视图区域重叠造成的标签归属冲突单独记录。
+入口：[native_web.py](../app/native_web.py) → [run.py:run](../experiments/pdf_label_tags/run.py)。输出契约由 [label_facts.py](../app/label_facts.py) 生成。
 
-每条记录继承标题中的所属面名，去掉 PLAN AT 等标题前缀，保留完整原始项目命名。
-程序将原生轴面文字与邻近且同向的长矢量线关联，优先虚线，然后按规格文字方向、距离及线段覆盖范围提出轴面归属。
-轴面文字周围的紧凑平行边框会被排除，包括分别绘制的填充边框和描边重复路径。
-短参考引线也可作为起点，沿同向、近共线且间隙不超过半个字体大小的原生线段追踪覆盖范围，保留全部支持矢量ID。
-不会无限延长参考线；无连接证据的远处构件仍不自动归属该轴面。排除的边框ID及追踪容差写入JSON，便于审计。
-距离单位为 PDF point，阈值按字体大小计算，不是实际尺寸毫米。匹配是基于“文字在构件附近”的工程启发式，不表示已证明构件拓扑。
-不能定位到具名轴线的轴间次梁/斜撑仅保留所属图纸面；轴间上下左右名字放在 `axis_context`，不会伪装成所属轴面。
-多个同向轴面都满足邻近条件时保留歧义，不自动选最近者。
+## 分工与处理顺序
 
-## 运行
+1. 程序提取每页原生文字、位置和矢量，生成 100 DPI 整页定位预览。
+2. AI 根据预览与带 ID/坐标的文字目录，找出实际建造 PLAN/ELEVATION。跳过图框、索引、说明、概览和节点详图等非目标内容；无目标页可返回空列表。
+3. 程序检查返回矩形范围、标题 ID、重复标题及标题是否位于区域内；不静默修正无效定位。
+4. 在各区域内解析钢材标签、轴线或面名称、方向和邻近关系；以各标签出现位置建立独立记录。
+5. 从 PDF 按区域渲染 300 DPI 无损 PNG，交付带指纹的标签事实包。
 
-在项目根目录 PowerShell 执行（使用 `.env` API 配置；定位默认 high）：
+当前主链没有额外独立的“页面用途 Agent”步骤：非建造内容由定位 Prompt 排除。旧链的用途过滤不应写成这里的功能。无目标区域的页不会产生供第二阶段使用的视图高清裁片，仍有整页定位预览和定位记录。
+
+定位 Prompt：[localize.md](../experiments/pdf_label_tags/localize.md)。回复只包含视图标题 ID、类型和归一化区域：
+
+```json
+{"views":[{"title_id":"原生标题文字ID","kind":"PLAN","bbox":[0.1,0.1,0.8,0.9]}]}
+```
+
+此处坐标与 ID 仅示意。坐标原点为页左上角，范围 0–1。模型在本阶段不填写钢材数量、长度或逐根所属面；这些标签信息由程序解析。
+
+## 标签、数量与所属面
+
+- 输入假设是每根构件/组合都有一个规格标签。每个标签 `member_cnt=1`；组合规格另存 `component_multiplier`，此阶段不展开。
+- 同规格文字在不同位置是不同标签，不因内容相同合并；跨视图也不去重。
+- 当前标题所属面必加入 `view_tags`。面名去除标题前缀，保留完整原始命名与 TOS/BOB 等标高基准，不缩成单个轴号。
+- 程序将轴面文字关联到附近同向参考线，结合标签方向、距离和线段覆盖提出归属；排除紧凑气泡边框，保留支持证据。
+- 线段追踪按字体尺度容差执行，不无限延长轴线，也不按当前样本文件名或某组固定轴名匹配。
+- 无法确认附加面时，只保留当前图纸面；轴间前后/上下关系写入 `axis_context`，不假装构件恰好位于某个具名面。
+- 多个可能归属、区域重叠或多规格共用文字行 bbox 等情况保留歧义。
+
+`AXIS_PROPOSED` 表示程序邻近关系提议，不是物理拓扑证明。第一阶段提供的固定身份与原生文字可以约束后续识别，但标签数量和归属并非无条件正确的工程真值。
+
+## 交付结构
+
+`stage_one_facts.json` 格式为 `native-label-facts/v1`。主要内容：
+
+| 层级 | 字段与用途 |
+| --- | --- |
+| 包 | `source_sha256, bundle_sha256, count_unit, coordinates, limits, views` |
+| 视图 | `view_id, page_id, title, kind, plane_name, bbox_page` |
+| 图像 | `image_file, image_sha256, image_size_px` |
+| 轴面 | `axes, axis_order`，保存完整名称、方向、位置与证据 |
+| 标签 | `label_id, text_id, spec, member_cnt, component_multiplier, bbox_view, direction, view_tags, tag_status, axis_context, axis_evidence` |
+| 原生文字 | `text_facts` 中的 ID、原文、位置与可解析的 `values_mm` |
+
+图上位置用于标签/证据/图片对应，不是构件的毫米空间坐标。原生尺寸与标高数值按规则转为毫米，后续模型引用文字 ID。
+
+同时输出 `regions.json`、`report.json`、`labels.csv`、`index.html`、`native/`、`responses/`、`logs/` 和高清图。事实包与图片在第二阶段调用前重新校验指纹；第一阶段不计算长度或拼接拓扑。
+
+## 并发与独立运行
+
+网页按 `LLM_TASK_CONCURRENCY` 并发文件，默认 10；单文件逐页处理。PyMuPDF 原生操作加锁，API 等待可以并发。所有文件交付后进入第二阶段。
+
+在项目根目录运行以下命令会**直接调用配置的 API**：
 
 ```powershell
 .\.venv\Scripts\python.exe tools/test_pdf_label_tags.py --pdf 'C:\path\drawing.pdf' --output tmp/pdf_label_view_tags/my-run
 ```
 
-每次付费试验使用新输出目录。复用该目录的真实 API 定位回复、仅重新执行本地解析：
+仅重新执行本地解析，复用相同 PDF/Prompt/schema 的定位记录：
 
 ```powershell
 .\.venv\Scripts\python.exe tools/test_pdf_label_tags.py --pdf 'C:\path\drawing.pdf' --output tmp/pdf_label_view_tags/my-run --reuse-localization
 ```
 
-复用前校验 PDF、提示词和响应 schema 哈希。不会修改源 PDF、原任务或现有阶段结果。
-`--expected-view-count` 和 `--expected-labels-per-view` 是可选验收参数，只在全部识别结束后比较，不进入模型输入，也不补删结果。
-没有项目文件名、轴线名、标高或预期数量的识别分支。
+没有 `--api` 开关。新付费实验使用新输出目录。`--expected-view-count`、`--expected-labels-per-view` 仅在完成后比较，不进入 Prompt、不补删输出；实际使用应以自己的独立验收为准。
 
-输出包括：
+## 限制与验证
 
-- `index.html`：300 DPI 原图、标签编号框、逐标签表格及轴线参考线证据；点击图片切换原始大小。
-- `labels.csv`：逐标签台账，含规格、view_tags、匹配状态、PDF 文字 ID 与轴间位置。
-- `report.json`：完整原始坐标、方向、标签计数、匹配依据、归属冲突及可选验收结果。
-- `stage_one_facts.json`：供第二阶段读取的版本化事实包，含图片指纹、稳定标签ID、规格、已有view_tags、轴线位置与顺序、带位置的原生文字和尺寸数值。没有人工参考答案。
-- `regions.json`：模型定位区域；`responses/`：真实 API 请求提示词、schema、响应和签名；`native/`：原生文字与矢量；`logs/`：脱敏日志。
+可提取文字/矢量、规格与轴面命名格式在解析器覆盖内时适用。定位把说明或详图裁进区域，可能产生额外标签；标签缺失、字体编码异常也会传递到后续阶段。不会从图片自动修补原生标签缺失。
 
-当前限制：只支持可提取文字/矢量的 PDF，以及现有项目规格/轴面命名解析器覆盖的格式。
-单行多个规格被保留为独立标签，但共享行级 bbox，标记位置歧义，不进行轴面自动归属。
-不计算长度、不识别拼接拓扑、不构建三维模型，也不在跨视图间去重。
-图框、详图或说明中若存在规格文字而模型把它裁进区域，也可能产生额外标签，应通过原图验收定位质量。
-
-## 当前交付验证
-
-真实API定位、本地解析测试：02有两个平面视图、各45条标签；04的A/B立面分别57/56条。
-04标高气泡边框误匹配已修复；02归属保持一致。验收数量仅在输出完成后核对，未进入识别提示词或算法。
-交付包格式为 `native-label-facts/v1`，第二阶段通过 `app.label_facts.load()` 校验事实和图片指纹，再按标签ID处理尺寸。
-既有网页三阶段流程独立运行，本工具通过文件契约交付，避免静默替换已有任务数据。
-
-测试（只有纯本地几何测试，不模拟 API）：
+本地几何、引用与归属约束测试：
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_pdf_label_tags.py -v
 ```
+
+后续交付见 [第二阶段](label-constrained-lengths.md)，整体指标口径见 [测试与指标](validation.md)。
