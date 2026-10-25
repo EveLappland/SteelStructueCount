@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from .domain import StageAction, StageEdit
-from .pipeline import execute, pending_reasons, validate_draft, render_draft, load_native
+from .pipeline import execute, pending_reasons, validate_draft, render_draft
 from .store import JobStore, StoreError
 from .audit import AuditLog
 from .member_recognition import normalize_view_tags
@@ -310,7 +310,7 @@ def create_app(root=ROOT, start_workers=True):
         return HTMLResponse(html,headers={'Cache-Control':'no-store'})
 
     from .native_web import router
-    native_router, native_service = router(root, ROOT/'static', start_workers)
+    native_router, native_service = router(root, start_workers=start_workers)
     application.include_router(native_router)
     application.state.native_runs = native_service
     application.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')

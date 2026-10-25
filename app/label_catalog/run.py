@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Literal
 
-from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import Field, model_validator
 
@@ -126,18 +124,3 @@ def run(pdf, output, settings=None, emit=print, *, reuse_localization=False,
     audit.event('EXPERIMENT_COMPLETED', counts=report['summary'], acceptance=checks)
     emit(json.dumps(report['summary'], ensure_ascii=False))
     return report
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pdf', required=True, type=Path)
-    parser.add_argument('--output', type=Path, default=Path('tmp/pdf_label_view_tags/run'))
-    parser.add_argument('--reuse-localization', action='store_true', help='Reuse verified saved localization; no API call')
-    parser.add_argument('--expected-view-count', type=int, help='Acceptance only; never sent to API')
-    parser.add_argument('--expected-labels-per-view', type=int, help='Acceptance only')
-    args = parser.parse_args()
-    load_dotenv(Path(__file__).resolve().parents[2] / '.env')
-    run(args.pdf, args.output, emit=lambda message: print(message, flush=True),
-        reuse_localization=args.reuse_localization, expected_view_count=args.expected_view_count,
-        expected_labels_per_view=args.expected_labels_per_view)
-    print(args.output.resolve() / 'index.html', flush=True)

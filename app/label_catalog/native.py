@@ -1,6 +1,6 @@
 """Native text occurrences -> view ownership and nearby named reference lines.
 
-This experiment assumes one visible steel label per member/assembly. It does
+The catalog assumes one visible steel label per member/assembly. It does
 not infer lengths, splice topology, or unique physical members across views.
 All geometric distances are PDF points, never structural millimetres.
 """

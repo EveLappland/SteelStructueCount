@@ -1,7 +1,7 @@
 """Generic geometry tests; no project IDs, PDF answers or mocked model output."""
 import unittest
 
-from experiments.pdf_label_tags.native import analyze, assign_axis, reference_lines, steel_occurrences
+from app.label_catalog.native import analyze, assign_axis, reference_lines, steel_occurrences
 
 
 def text(identity, value, box, direction=(1, 0)):

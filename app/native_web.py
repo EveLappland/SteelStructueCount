@@ -198,7 +198,7 @@ class NativeRuns:
                     self.update(identity,stage=number,next_stage=number,stage_states=stage_states)
                     emit(f'正在执行第 {number} 阶段。')
                     if number==1:
-                        from experiments.pdf_label_tags.run import run as catalog
+                        from app.label_catalog.run import run as catalog
                         existing = {entry.get('input_index',index):entry for index,entry in enumerate(native_stages.records({'stages':stages},1))}
                         failures=[]
                         with ThreadPoolExecutor(max_workers=task_limit,thread_name_prefix='catalog-file') as pool:
@@ -356,7 +356,7 @@ class NativeRuns:
         return job,state=='queued'
 
 
-def router(root, static, start_workers=True):
+def router(root, start_workers=True):
     service = NativeRuns(root, start_workers)
     api = APIRouter()
 

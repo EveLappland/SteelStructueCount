@@ -44,6 +44,10 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 
 任务之间排队；一个任务内，全部第一阶段交付后才进入第二阶段，全部第二阶段交付后才进入第三阶段。第二阶段默认理论上限为 **10 × 5 个同时请求**，实际受代理依赖与工作量限制。思考强度默认 `high`，可选 `low / high / max`，具体支持取决于代码中的模型适配。详见 [配置说明](docs/configuration.md)。
 
+## 最近一次运行
+
+任务 `0094b0c826e447de953f34d8672503d1` 于香港时间 2026-10-24 20:09:17–20:32:14 从第二阶段重跑，耗时 **22 分 56.8 秒**：第二阶段约 20 分 40 秒，第三阶段及导出约 2 分 16.7 秒。第一阶段复用；354 条标签全部得到长度，第三阶段 UNKNOWN 为 0、回退保留 10 根/组合。此轮尚未严格评分，不能把 UNKNOWN 为 0 当作准确率 100%。[耗时口径与首轮请求失败原因](docs/validation.md)。
+
 ## 最近已完成的严格评分
 
 02–05 四份 PDF、11 个视图，任务 `a3d9c18554eb4b90bf63277022de7555`。用户清单仅在导出后离线使用，按规格文本及长度数值**完全匹配**计分，组合展开一次，不含 4 条 PL 记录，不评价材质或逐位置身份。
@@ -62,9 +66,9 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 node --test tests/*.cjs
 ```
 
-最近一次代码回归为 206 项 Python、5 项 Node 测试通过；程序一致性测试不代表模型识别准确率。当前任务、原图、响应和日志保存在被 Git 忽略的 `data/`，不要提交 `.env` 或验收清单。
+最近一次代码回归为 203 项 Python、5 项 Node 测试通过；程序一致性测试不代表模型识别准确率。当前任务、原图、响应和日志保存在被 Git 忽略的 `data/`，不要提交 `.env` 或验收清单。
 
 - [文档目录](docs/README.md) · [网页操作](docs/native-workflow-web.md)
 - [架构与兼容边界](docs/architecture.md) · [接口](docs/api.md)
-- [第一阶段](docs/pdf-label-tags-experiment.md) · [第二阶段及 Prompt](docs/label-constrained-lengths.md) · [第三阶段](docs/cross-view-entities.md)
+- [第一阶段](docs/native-label-catalog.md) · [第二阶段及 Prompt](docs/label-constrained-lengths.md) · [第三阶段](docs/cross-view-entities.md)
 - [更新日志](CHANGELOG.md) · [开发交接](docs/current-workflow.md)

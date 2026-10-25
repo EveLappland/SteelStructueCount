@@ -9,12 +9,12 @@
 | 页面 | [index.html](../static/index.html)、[app.js](../static/app.js) | 上传、任务列表、三阶段切换、设置、操作与下载 |
 | 新结果展示 | [fixed_stage.js](../static/fixed_stage.js)、[native_stages.py](../app/native_stages.py) | 将固定标签结果适配到原页面；台账只读 |
 | HTTP 服务 | [main.py](../app/main.py)、[native_web.py](../app/native_web.py) | FastAPI、上传检查、任务队列、版本控制、持久化 |
-| 第一阶段 | [run.py](../experiments/pdf_label_tags/run.py)、[label_facts.py](../app/label_facts.py) | 视图定位、原生标签与轴面解析、高清图及事实包 |
+| 第一阶段 | [run.py](../app/label_catalog/run.py)、[label_facts.py](../app/label_facts.py) | 视图定位、原生标签与轴面解析、高清图及事实包 |
 | 第二阶段 | [label_length_workflow.py](../app/label_length_workflow.py) | 网格、总代理、专家、仲裁与长度契约 |
 | 第三阶段 | [entity_workflow.py](../app/entity_workflow.py)、[entity_reduction.py](../app/entity_reduction.py) | 跨视图候选、匹配、守恒与归约 |
 | 导出与审计 | [entity_report.py](../app/entity_report.py)、[audit.py](../app/audit.py) | Excel、JSON、来源对应、原始响应与事件日志 |
 
-`experiments/pdf_label_tags/` 虽保留实验目录名，已被网页主流程直接调用。`static/native_workflow.html` 只保留旧地址跳转；它不是另一套产品 UI。
+`app/label_catalog/` 是网页与 CLI 共用的正式第一阶段模块。`static/native_workflow.html` 只保留旧地址跳转；它不是另一套产品 UI。
 
 ## 三阶段交付
 

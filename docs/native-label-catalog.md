@@ -1,8 +1,8 @@
 # 第一阶段：原生标签、轴面与高清裁切
 
-本模块已接入 8120 主网页新任务。目录 `experiments/pdf_label_tags/` 和本文文件名保留早期命名，不能据此认为它仍是独立实验。
+本模块位于 `app/label_catalog/`，是 8120 主网页固定标签流程的第一阶段。命令行参数解析留在 `tools/test_pdf_label_tags.py`，与网页共用 `run()`。
 
-入口：[native_web.py](../app/native_web.py) → [run.py:run](../experiments/pdf_label_tags/run.py)。输出契约由 [label_facts.py](../app/label_facts.py) 生成。
+入口：[native_web.py](../app/native_web.py) → [run.py:run](../app/label_catalog/run.py)。输出契约由 [label_facts.py](../app/label_facts.py) 生成。
 
 ## 分工与处理顺序
 
@@ -12,9 +12,11 @@
 4. 在各区域内解析钢材标签、轴线或面名称、方向和邻近关系；以各标签出现位置建立独立记录。
 5. 从 PDF 按区域渲染 300 DPI 无损 PNG，交付带指纹的标签事实包。
 
+过滤在定位时由 AI 自动执行，当前网页没有手动勾选排除页面、视图或规格的功能；自动过滤仍可能误选或漏选。
+
 当前主链没有额外独立的“页面用途 Agent”步骤：非建造内容由定位 Prompt 排除。旧链的用途过滤不应写成这里的功能。无目标区域的页不会产生供第二阶段使用的视图高清裁片，仍有整页定位预览和定位记录。
 
-定位 Prompt：[localize.md](../experiments/pdf_label_tags/localize.md)。回复只包含视图标题 ID、类型和归一化区域：
+定位 Prompt：[localize.md](../app/label_catalog/localize.md)。回复只包含视图标题 ID、类型和归一化区域：
 
 ```json
 {"views":[{"title_id":"原生标题文字ID","kind":"PLAN","bbox":[0.1,0.1,0.8,0.9]}]}
