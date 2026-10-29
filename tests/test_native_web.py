@@ -1,10 +1,12 @@
 """Actual HTTP/storage/contracts and local reduction; no mocked model replies."""
 import json
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from app.main import create_app
 from app.native_web import NativeRuns
@@ -84,7 +86,15 @@ class NativeWebTests(unittest.TestCase):
         self.assertEqual(status['summary']['api_request_attempts'], 0)
         self.assertEqual(status['summary']['entity_quantity'], 1)
         url = '/api/native/runs/'+value['id']+'/files/'
-        self.assertTrue(self.client.get(url+'stage_three/stage_three.xlsx').content.startswith(b'PK'))
+        download = self.client.get(url+'stage_three/stage_three.xlsx')
+        self.assertTrue(download.content.startswith(b'PK'))
+        with BytesIO(download.content) as stream:
+            book = load_workbook(stream, read_only=True)
+            try:
+                self.assertEqual(list(book['单根材料清单'].values), [
+                    ('PROFILE', 'MATERIAL', 'LENGTH(mm)'), ('HEA220', None, 7200)])
+            finally:
+                book.close()
         self.assertIn('只选择已有长度来源', self.client.get(url+'stage_three/index.html').text)
         self.assertEqual(self.client.get(url+'..%2F..%2Fnative_runs.sqlite3').status_code, 404)
         archive=self.client.get('/api/native/runs/'+value['id']+'/evidence-download')

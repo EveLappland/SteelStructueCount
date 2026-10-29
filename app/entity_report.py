@@ -18,6 +18,25 @@ def component_rows(entities):
     return rows
 
 
+def write_single_member_sheet(book, components):
+    """One exported component per row; material has no source in this workflow."""
+    name = '单根材料清单'
+    sheet = book[name] if name in book.sheetnames else book.create_sheet(name)
+    sheet.delete_rows(1, sheet.max_row)
+    sheet.append(['PROFILE', 'MATERIAL', 'LENGTH(mm)'])
+    for row in components:
+        # profile is already the canonical single section (e.g. L70*7, not 2LF-L70*7).
+        # Do not infer steel grade from section names or offline reference answers.
+        sheet.append([row['profile'], None, row['length_mm']])
+    sheet.freeze_panes = 'A2'
+    sheet.auto_filter.ref = sheet.dimensions
+    for column, width in (('A', 24), ('B', 18), ('C', 18)):
+        sheet.column_dimensions[column].width = width
+    for cells in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
+        cells[0].number_format = '0.00'
+    return sheet
+
+
 def export(directory,report,observations):
     entities=report['entities']; components=component_rows(entities)
     counts=Counter((c['profile'],c['length_mm']) for c in components)
@@ -44,6 +63,7 @@ def export(directory,report,observations):
         compatible_summary.append([row['profile'],row['length_mm'],row['quantity'],row['total_length_mm']])
     compatible_summary.freeze_panes='A2'; compatible_summary.auto_filter.ref=compatible_summary.dimensions
     table(book.create_sheet('展开单根台账'),components,['component_id','entity_id','profile','length_mm','view_tags','status'])
+    write_single_member_sheet(book, components)
     table(book.create_sheet('跨视图观察对应'),report['observation_entity_map'],[
         'observation_id','label_id','view_uid','entity_id','original_length_mm','entity_length_mm','changed'])
     table(book.create_sheet('原始观察'),list(observations.values()),['observation_id','view_title','label_id','spec',
